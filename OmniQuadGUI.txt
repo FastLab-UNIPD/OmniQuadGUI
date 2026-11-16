@@ -1,0 +1,30 @@
+Opening window asks for IP an rock password. Connect button initiates the connection.
+Connects via ssh to the drone with ssh rock@[IP ADDRESS OF THE ROCK] then inputs the
+password when asked
+
+The terminal should always be visible to allow me to check what it's doing
+
+Then the actual interface opens. It should have
+
+"Check running containers" button that sends "docker ps". Than the containers are shown in a list withing the GUI
+
+"Stop Fast-LIO container" that sends "./nuc_helper.sh stoprm" to the terminal. The program should probably check if the container is running before closing it. If other containers have been opened, the program should exit them before stopping this.
+
+"Start Fast-LIO container" that sends "./nuc_helper.sh run --mode run_nodes --config ~/mid360_custom.yaml"
+
+"Shutdown" button that sends "sudo shutdown now". This buttons should also always run "./nuc_helper.sh stoprm" to safely close the container before shutdown. 
+
+
+
+"Enter the PX4 bridge container" button that sends "docker exec -it px4_fastlio_bridge bash"
+This button should enable a new series of buttons that allow me to check the topics that are running
+
+"List available topics" sends "ros2 topic list". The topics are listed in the GUI.
+
+The listed topics should be clickable and there should be a button "Echo selected topic" that runs "ros2 topic echo {selected topic}". It's fine for now to just show the result int the terminal
+
+Specific buttons "Verify odometry" runs "ros2 topic echo /Odometry", "Specific position data" runs "ros2 topic echo /Odometry --field pose.pose.position", "Verify covariances" runs "grep -E "acc_cov|gyr_cov" /root/ros2_ws/install/fast_lio/share/fast_lio/config/mid360_override.yaml"
+
+More specific buttons for "Verify network buffer sizes" runs "cat /proc/sys/net/core/rmem_max", "Check Livox IMU frequency" runs "ros2 topic hz /livox/imu", "Check Livox LiDAR frequency" runs "ros2 topic hz /livox/lidar"
+
+It is absolutely fundamental that the Fast-LIO container is stopped before shutdown!!
