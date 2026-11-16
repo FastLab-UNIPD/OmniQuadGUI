@@ -373,9 +373,10 @@ class OmniQuadApp:
         pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         window.add(pane)
 
-        # -- LEFT: terminal on top, log area underneath -------------------
-        left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        pane.add1(left_box)
+        # -- LEFT: a vertical split: terminal on top, log area below -----
+        # Paned = a divider the user can drag; it starts at 50/50.
+        left_pane = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
+        pane.add1(left_pane)
 
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(
@@ -383,8 +384,8 @@ class OmniQuadApp:
             Gtk.PolicyType.ALWAYS,      # vertical scrollbar (always useful)
         )
         scrolled.set_size_request(850, -1)  # terminal stays wide by default
-        # Terminal grows with the window; the log area below stays small.
-        left_box.pack_start(scrolled, True, True, 0)
+        # resize=True: the terminal pane grows/shrinks with the window.
+        left_pane.pack1(scrolled, True, False)
 
         terminal = Vte.Terminal()
         # A slightly bigger, fixed-size font makes the output readable.
@@ -395,14 +396,15 @@ class OmniQuadApp:
         scrolled.add(terminal)
 
         # -- LOG AREA: every background command and its output lands here.
-        # It sits directly under the terminal, in a small frame.
+        # It sits directly under the terminal in the lower half.
         log_frame = Gtk.Frame(label="Background command log")
         log_scrolled = Gtk.ScrolledWindow()
         log_scrolled.set_policy(
             Gtk.PolicyType.AUTOMATIC,
             Gtk.PolicyType.AUTOMATIC,
         )
-        log_scrolled.set_size_request(-1, 170)   # small strip under terminal
+        # Minimum height; the divider decides the rest.
+        log_scrolled.set_size_request(-1, 120)
         self.log_textview = Gtk.TextView()
         self.log_textview.set_editable(False)    # read-only
         self.log_textview.set_cursor_visible(False)
@@ -411,7 +413,15 @@ class OmniQuadApp:
         self.log_buffer = self.log_textview.get_buffer()
         log_scrolled.add(self.log_textview)
         log_frame.add(log_scrolled)
-        left_box.pack_start(log_frame, False, False, 0)
+        left_pane.pack2(log_frame, True, False)
+
+        # Put the divider in the middle (50/50) once the window has its
+        # real size.  GLib.idle_add runs it after the window is shown.
+        def split_left_half():
+            height = window.get_allocated_height()
+            if height > 0:
+                left_pane.set_position(height // 2)
+            return False   # run only once
 
         # -- RIGHT: host buttons, container list (stage 3 adds more) -----
         button_box = self.build_right_panel()
@@ -419,6 +429,18 @@ class OmniQuadApp:
 
         self.main_window = window
         window.show_all()
+
+        # show_all() makes EVERY widget visible, including the shutdown
+        # Confirm/Cancel row.  It must only appear after the user clicks
+        # "Shutdown", so hide it again explicitly.
+        self.shutdown_confirm_box.hide()
+
+        # Put the left divider at 50/50 now that the real window size
+        # is known (see split_left_half above).
+        GLib.idle_add(split_left_half)
+
+        # Right-click on the terminal opens a small Copy/Paste menu.
+        terminal.connect("button-press-event", self.on_terminal_button_press)
 
         # Make sure the terminal (not the button panel) has the keyboard
         # focus right away, so you can type immediately.
@@ -445,6 +467,29 @@ class OmniQuadApp:
                     + str(status) + "). ---\n"
                     "Close this window and connect again.\n")
         terminal.feed(text.encode())
+
+    def on_terminal_button_press(self, terminal, event):
+        """Right-click on the terminal opens a Copy / Paste menu.
+
+        Keyboard shortcuts that already work in the terminal:
+          Ctrl+Shift+C = copy the selection
+          Ctrl+Shift+V = paste the clipboard
+        (plain Ctrl+V does nothing in terminals -- that is normal).
+        """
+        if event.button != 3:      # 3 = right mouse button
+            return False           # let the terminal handle other clicks
+        menu = Gtk.Menu()
+        copy_item = Gtk.MenuItem(label="Copy")
+        copy_item.connect("activate",
+                          lambda item: terminal.copy_clipboard())
+        paste_item = Gtk.MenuItem(label="Paste")
+        paste_item.connect("activate",
+                           lambda item: terminal.paste_clipboard())
+        menu.append(copy_item)
+        menu.append(paste_item)
+        menu.show_all()
+        menu.popup_at_pointer(event)
+        return True                # we handled the right click
 
     def start_ssh_session(self, ip, user):
         """Start `sshpass -e ssh ... rock@<ip>` inside the VTE terminal.
@@ -563,7 +608,10 @@ class OmniQuadApp:
         self.shutdown_confirm_box.pack_start(confirm, True, True, 0)
         self.shutdown_confirm_box.pack_start(cancel, True, True, 0)
         panel.add(self.shutdown_confirm_box)
-        self.shutdown_confirm_box.hide()   # shown only after arming
+        self.shutdown_confirm_box.hide()
+        # NOTE: window.show_all() (called later in open_main_window)
+        # would reveal this row again, so open_main_window hides it
+        # explicitly right after showing the window.
 
         # -- container list (filled by "Check running containers") ------
         panel.add(Gtk.Label(label="Containers running (last check):"))

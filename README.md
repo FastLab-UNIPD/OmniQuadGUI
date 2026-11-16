@@ -102,12 +102,18 @@ simply type their command into that terminal, exactly as if you had typed it.
 ## 5. Stage 2: the host buttons
 
 The right-hand column has four buttons (built from `commands.json`), and
-under the terminal there is a small **Background command log**: every
-command the app runs remotely, and its full output, is appended there
-with a timestamp. The buttons themselves never freeze the window — the
-ssh commands run in background threads and reuse the master connection
+the **left half** of the window is split 50/50 (drag the divider to
+change it): the terminal on top, and below it the small
+**Background command log** — every command the app runs remotely, and
+its full output, is appended there with a timestamp. The buttons
+themselves never freeze the window — the ssh commands run in background
+threads and reuse the master connection
 (`ssh -o ControlPath=<socket> rock@<ip> "<command>"`), so no password is
 typed a second time.
+
+Pasting into the terminal: **right-click → Paste**, or the keyboard
+shortcut **Ctrl+Shift+V** (plain Ctrl+V does nothing in terminals —
+that is normal). Copy is right-click → Copy or Ctrl+Shift+C.
 
 ### Check running containers
 Runs `docker ps` **without sudo**. The running containers appear as a
