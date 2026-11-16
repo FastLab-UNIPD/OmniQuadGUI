@@ -64,9 +64,14 @@ Stage 3 (all 22 headless checks pass):
   leave_container_shell() now also calls update_shell_button_state(),
   so stop/shutdown sequences reset the buttons too.
 - "Stop current command" sends Ctrl+C (b"\x03").
-- "List available topics": background "docker exec px4_fastlio_bridge
-  ros2 topic list" -> clickable SINGLE-selection Gtk.ListBox with its
-  own spinner; clicking a row sets selected_topic.
+- "List available topics": types "ros2 topic list" INTO the terminal
+  (ros2 only exists inside the container shell), waits 3 s, then reads
+  the printed topics from the terminal screen
+  (get_text_format(Vte.Format.TEXT), lines starting with "/", deduped)
+  and fills the clickable SINGLE-selection Gtk.ListBox with its own
+  spinner; clicking a row sets selected_topic. The old background
+  "docker exec ... ros2 topic list" variant failed on the real drone
+  (non-interactive shell has no ROS env) - do not bring it back.
 - "Echo selected topic": types "ros2 topic echo <selection>".
 - Fixed buttons type their commands.json command (odometry echo,
   --field pose.pose.position, covariances grep, rmem_max, IMU/LiDAR hz).

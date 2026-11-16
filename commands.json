@@ -23,64 +23,64 @@
 
     "terminal_buttons": [
         {
-            "label": "Enter PX4 bridge container",
+            "label": "📦 Enter PX4 bridge container",
             "action": "enter_container",
             "command": "docker exec -it px4_fastlio_bridge bash",
             "needs_inside_shell": false
         },
         {
-            "label": "Leave container",
+            "label": "🚪 Leave container",
             "action": "leave_container",
             "needs_inside_shell": true
         },
         {
-            "label": "Stop current command",
+            "label": "✋ Stop current command",
             "action": "stop_command",
             "needs_inside_shell": false
         },
         {
-            "label": "List available topics",
+            "label": "📋 List available topics",
             "action": "list_topics",
-            "command": "docker exec px4_fastlio_bridge ros2 topic list",
+            "command": "ros2 topic list",
             "needs_inside_shell": false
         },
         {
-            "label": "Echo selected topic",
+            "label": "🔁 Echo selected topic",
             "action": "echo_selected",
             "needs_inside_shell": false
         },
         {
-            "label": "Verify odometry",
+            "label": "🧭 Verify odometry",
             "action": "echo_selected",
             "command": "ros2 topic echo /Odometry",
             "needs_inside_shell": false
         },
         {
-            "label": "Specific position data",
+            "label": "📍 Specific position data",
             "action": "send_to_terminal",
             "command": "ros2 topic echo /Odometry --field pose.pose.position",
             "needs_inside_shell": false
         },
         {
-            "label": "Verify covariances",
+            "label": "🔍 Verify covariances",
             "action": "send_to_terminal",
             "command": "grep -E \"acc_cov|gyr_cov\" /root/ros2_ws/install/fast_lio/share/fast_lio/config/mid360_override.yaml",
             "needs_inside_shell": false
         },
         {
-            "label": "Verify network buffer sizes",
+            "label": "🌐 Verify network buffer sizes",
             "action": "send_to_terminal",
             "command": "cat /proc/sys/net/core/rmem_max",
             "needs_inside_shell": false
         },
         {
-            "label": "Check Livox IMU frequency",
+            "label": "📶 Check Livox IMU frequency",
             "action": "send_to_terminal",
             "command": "ros2 topic hz /livox/imu",
             "needs_inside_shell": false
         },
         {
-            "label": "Check Livox LiDAR frequency",
+            "label": "📡 Check Livox LiDAR frequency",
             "action": "send_to_terminal",
             "command": "ros2 topic hz /livox/lidar",
             "needs_inside_shell": false

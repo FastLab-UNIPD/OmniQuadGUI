@@ -179,14 +179,23 @@ drone to shut down from the app.
 
 ## 6. Stage 3: container shell and ROS buttons
 
-The right panel has a **Container shell / ROS (terminal)** section. These
-buttons *type commands into the terminal* (and the log notes each one),
-so they only work while you are inside the container shell:
+The right side of the window has **two button columns** to keep things
+tidy: *Host commands* (docker, container start/stop, shutdown, and the
+container list) on the left, and *Container shell / ROS* on the right.
+The buttons carry small emojis (📦 enter, 🚪 leave, 📋 topics, 📡 LiDAR,
+…) so you can find the right one at a glance — the labels, including the
+emojis, live in `commands.json`. These buttons *type commands into the
+terminal* (and the log notes each one), so they only work while you are
+inside the container shell:
 
 ### Enter PX4 bridge container / Leave container
-- **Enter** types `docker exec -it px4_fastlio_bridge bash` into the
-  terminal and flips the app's `inside_container_shell` flag. Only then
-  do the ROS buttons become usable.
+- **Enter** is only usable while a `docker ps` check says the
+  `px4_fastlio_bridge` container is actually **running** (the app
+  checks automatically after connecting, and after every
+  start/stop/verify — so the button always reflects reality).
+  When clicked it types `docker exec -it px4_fastlio_bridge bash` into
+  the terminal and flips the app's `inside_container_shell` flag. Only
+  then do the ROS buttons become usable.
 - **Leave** sends Ctrl+C, waits 0.5 s, then types `exit`. A bare `exit`
   is *only ever* sent while the app knows you are inside the container —
   on the drone's normal shell it would close the whole ssh session.
@@ -198,9 +207,12 @@ Sends Ctrl+C into the terminal — use it to stop `ros2 topic echo` or
 `ros2 topic hz`, which run forever until interrupted.
 
 ### List available topics
-Runs `docker exec px4_fastlio_bridge ros2 topic list` in the background
-channel (works from the host shell, no ROS sourcing needed). The topics
-appear in a list below the buttons; **click one** to select it.
+Types `ros2 topic list` **into the terminal** — the same place where you
+are inside the container and `ros2` is available — waits a few seconds
+(the first call starts the ROS daemon and can be slow), then reads the
+topics that were printed and shows them in the list below; **click one**
+to select it. If nothing is found (e.g. the nodes are still starting),
+the log tells you and you can simply click the button again.
 
 ### Echo selected topic
 Types `ros2 topic echo <the topic you clicked>` into the terminal.

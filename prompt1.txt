@@ -1,0 +1,98 @@
+You are helping a beginner build a small desktop demo app called OmniQuadGUI.
+I am a mechanical engineering student with only basic Python knowledge, so
+keep the code simple, readable and heavily commented. Avoid advanced patterns.
+
+GOAL
+A Python 3 GTK 3 app for Ubuntu with an embedded VTE terminal that connects
+over SSH to a drone's onboard computer (Radxa Rock 5B, ROS 2, Docker) and has
+buttons that send fixed commands. It does NOT control flight; it manages
+containers and inspects ROS topics while the drone sits on my desk.
+Dependencies: python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, sshpass.
+
+ARCHITECTURE (important)
+- The VTE terminal is ALWAYS visible and shows the interactive ssh session.
+- The session is opened with sshpass reading the password from the SSHPASS
+  environment variable (sshpass -e), never on a command line, never written
+  to disk or logs. Command shape: ssh -o ControlMaster=yes
+  -o ControlPath=<socket> -o StrictHostKeyChecking=accept-new rock@<IP>
+- Buttons whose output I want to watch live are typed into the terminal with
+  feed_child (include the newline).
+- Everything the app must READ (container list, topic list, safety checks)
+  runs in a background thread as a separate non-interactive
+  ssh -o ControlPath=<socket> rock@<IP> "<command>" that reuses the
+  logged-in connection (no second password). Update the GUI only from the
+  main thread (GLib.idle_add). Also append each background command and its
+  output to a small log area under the terminal.
+- Never block the GUI thread.
+- The app keeps a flag "inside_container_shell", set only when its own
+  "Enter container" button was used, cleared by "Leave container".
+  NEVER send a bare `exit` unless that flag is set, because on the drone's
+  normal shell it would close the ssh session.
+
+FLOW
+1. Start window: fields for drone IP and password (masked), user "rock"
+   (editable in config.json), a Connect button. On success open the main
+   window; on failure show a clear error in plain English.
+2. Main window: terminal large and always visible, buttons beside it.
+
+COMMANDS live in commands.json; the GUI builds buttons from it.
+Container name: px4_fastlio_bridge. Running ssh commands start in the
+home directory, where nuc_helper.sh is located.
+
+HOST BUTTONS (background channel, output in log area)
+- "Check running containers": docker ps (no sudo; if permission denied,
+  say so clearly). Show the containers as a list in the GUI.
+- "Start Fast-LIO container":
+  ./nuc_helper.sh run --mode run_nodes --config ~/mid360_custom.yaml
+- "Stop Fast-LIO container": 
+  1. check with docker ps that px4_fastlio_bridge is running; if not, report
+     "already stopped" and finish;
+  2. if inside_container_shell is set: send Ctrl+C, wait 0.5 s, type exit
+     into the terminal, clear the flag;
+  3. run ./nuc_helper.sh stoprm (it only errors if the container is not
+     running, so an error here is not fatal by itself);
+  4. verify with docker ps that px4_fastlio_bridge is no longer running and
+     report the result.
+- "Shutdown": two steps. First click arms it: show "Confirm shutdown" and
+  "Cancel" buttons. Only "Confirm shutdown" starts the sequence:
+  1. same as steps 2-4 of "Stop Fast-LIO container", ALWAYS, even if the
+     container looks stopped;
+  2. SAFETY-CRITICAL: if the verification shows the container still running
+     or the check itself fails, ABORT, do NOT shut down, and show a loud
+     warning;
+  3. only when verified stopped, run sudo -S -p '' shutdown now, sending the
+     login password through the ssh process's standard input (not in the
+     command text, not in logs);
+  4. the connection dropping afterwards is expected, not an error. Show
+     "Shutdown sent, connection closed" and disable drone buttons.
+- config.json option dry_run (default true): when true, do everything above
+  but do not run the final sudo shutdown; print what it would have run.
+
+TERMINAL BUTTONS
+- "Enter PX4 bridge container": type docker exec -it px4_fastlio_bridge bash
+  into the terminal, set inside_container_shell, and enable the buttons
+  below (disabled until then, and disabled again after leaving).
+- "Leave container": Ctrl+C then exit (only if the flag is set).
+- "Stop current command": send Ctrl+C to the terminal (needed for echo/hz).
+- "List available topics": run docker exec px4_fastlio_bridge ros2 topic list
+  in the background channel (no ROS sourcing needed) and show the topics as
+  a clickable list.
+- "Echo selected topic": type ros2 topic echo <selected topic> in the terminal.
+- "Verify odometry": ros2 topic echo /Odometry
+- "Specific position data": ros2 topic echo /Odometry --field pose.pose.position
+- "Verify covariances":
+  grep -E "acc_cov|gyr_cov" /root/ros2_ws/install/fast_lio/share/fast_lio/config/mid360_override.yaml
+- "Verify network buffer sizes": cat /proc/sys/net/core/rmem_max
+- "Check Livox IMU frequency": ros2 topic hz /livox/imu
+- "Check Livox LiDAR frequency": ros2 topic hz /livox/lidar
+
+RULES
+- Files: main.py, commands.json, config.json, README.md. No extra features.
+- Plain English error messages. README for someone new to Ubuntu: how to
+  install, run, and how the shared ssh connection works.
+- Build in stages and stop after each one so I can test on the real drone:
+  (1) start window + connection + terminal; (2) host buttons including safe
+  stop and shutdown (with dry_run on); (3) container shell and ROS buttons.
+
+First, give me your plan in a few lines and ask about anything unclear.
+Then implement stage 1 only.

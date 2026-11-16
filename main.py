@@ -259,6 +259,10 @@ class OmniQuadApp:
         self.shutdown_was_sent = False
         # Demo mode state: pretend the Fast-LIO container is running.
         self.demo_container_running = True
+        # Is the Fast-LIO container running (according to the last
+        # docker ps check)?  None = not checked yet.  The "Enter
+        # container" button is only usable when this is True.
+        self.container_running = None
         # Demo mode: True when the demo login was used.  The GUI is then
         # fully usable but NOTHING connects to a drone; all remote
         # commands get simulated answers.
@@ -374,6 +378,8 @@ class OmniQuadApp:
                 and password == self.config["demo_password"]):
             self.demo_mode = True
             self.password = ""   # no real password exists in demo mode
+            # The simulated container starts in the "running" state.
+            self.container_running = True
             self.open_main_window(ip if ip else "demo", user)
             return
 
@@ -509,7 +515,9 @@ class OmniQuadApp:
             title = "OmniQuadGUI - " + user + "@" + ip
 
         window = Gtk.Window(title=title)
-        window.set_default_size(1250, 750)
+        # Wide enough for terminal + log on the left and the two button
+        # columns on the right.
+        window.set_default_size(1550, 750)
         window.connect("delete-event", self.on_main_window_closed)
 
         # A Paned widget splits the window into two resizable parts.
@@ -602,6 +610,9 @@ class OmniQuadApp:
         # ssh when connected, or only a demo banner in demo mode.
         if self.demo_mode:
             self.feed_demo_banner()
+            # Check the (simulated) container state once, so the "Enter
+            # container" button starts in the correct state.
+            self.on_check_containers(None)
         else:
             self.start_ssh_session(ip, user)
 
@@ -708,8 +719,11 @@ class OmniQuadApp:
             self.terminal.feed(
                 ("Could not start ssh: " + error.message + "\n").encode()
             )
-        # If error is None, everything is fine and ssh output will simply
-        # appear in the terminal.  Nothing more to do here.
+        else:
+            # Connected! First thing: check the container state in the
+            # background, so the "Enter container" button reflects
+            # reality from the start.
+            self.on_check_containers(None)
 
     # ==================================================================
     # STAGE 2: background command channel, log area and host buttons
@@ -734,10 +748,22 @@ class OmniQuadApp:
     # The right-hand button panel
     # ------------------------------------------------------------------
     def build_right_panel(self):
-        """Create the right-hand column: host buttons + container list."""
+        """Create the right-hand area: TWO columns of buttons.
+
+        Column 1: drone host commands (docker / nuc_helper / shutdown).
+        Column 2: container shell + ROS buttons (typed into the
+        terminal), with the topic list and the echo button together.
+        """
+        columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        columns.set_border_width(10)
+        columns.pack_start(self.build_host_panel(), False, False, 0)
+        columns.pack_start(self.build_ros_panel(), False, False, 0)
+        return columns
+
+    def build_host_panel(self):
+        """Column 1: host commands + the container list display."""
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        panel.set_border_width(10)
-        panel.set_size_request(300, -1)
+        panel.set_size_request(290, -1)
 
         panel.add(Gtk.Label(label="Host commands (run on the drone)"))
 
@@ -815,21 +841,22 @@ class OmniQuadApp:
         list_scrolled.add(self.container_listbox)
         panel.add(list_scrolled)
 
-        panel.add(Gtk.Separator())   # visual divider between sections
+        return panel
 
-        # ----------------------------------------------------------------
-        # Container shell & ROS buttons (stage 3)
-        # ----------------------------------------------------------------
+    def build_ros_panel(self):
+        """Column 2: container shell buttons + ROS topics (clickable)."""
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        panel.set_size_request(290, -1)
+
+        panel.add(Gtk.Label(label="Container shell / ROS (terminal)"))
+
         # These buttons are typed INTO the terminal, so they only make
         # sense when the user is inside the container shell.  The "Enter"
         # button enables them; "Leave" disables them again.
-        panel.add(Gtk.Label(label="Container shell / ROS (terminal)"))
-
         self.enter_container_button = None
         self.container_shell_buttons = []   # all buttons except "Enter"
-        self.topics_listbox = None
-        self.topics_spinner = None
         self.selected_topic = ""            # topic clicked in the list
+        self.echo_selected_button = None    # placed next to the topic list
 
         for entry in self.commands.get("terminal_buttons", []):
             action = entry.get("action", "")
@@ -849,8 +876,12 @@ class OmniQuadApp:
                 self.container_shell_buttons.append(button)
             elif action == "echo_selected" and not entry.get("command"):
                 # No fixed command: echo whatever topic is selected.
+                # This button is added AFTER the topic list below, so it
+                # sits right next to what it acts on.
                 button.connect("clicked", self.on_echo_selected_topic)
                 self.container_shell_buttons.append(button)
+                self.echo_selected_button = button
+                continue   # not added to the panel in this loop
             else:
                 # A fixed command typed into the terminal on each click.
                 button.connect("clicked", self.on_send_to_terminal,
@@ -858,7 +889,8 @@ class OmniQuadApp:
                 self.container_shell_buttons.append(button)
             panel.add(button)
 
-        # ROS topic list (filled by "List available topics")
+        # ROS topic list (filled by "List available topics"), with its
+        # own little loading spinner.
         topic_row = Gtk.Box(spacing=6)
         topic_label = Gtk.Label(label="ROS topics (click one to select):")
         topic_label.set_xalign(0.0)
@@ -878,20 +910,15 @@ class OmniQuadApp:
         topics_scrolled.add(self.topics_listbox)
         panel.add(topics_scrolled)
 
-        # The ROS buttons start DISABLED: they only work inside the
-        # container shell, which starts with "Enter PX4 bridge container".
-        self.enter_container_button.set_sensitive(True)
-        for shell_button in self.container_shell_buttons:
-            shell_button.set_sensitive(False)
+        # "Echo selected topic" right below the list it acts on.
+        panel.add(self.echo_selected_button)
 
-        # The whole column is now taller than the window: put it inside
-        # a scrollable area.
-        outer_scrolled = Gtk.ScrolledWindow()
-        outer_scrolled.set_policy(
-            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        outer_scrolled.set_size_request(300, -1)
-        outer_scrolled.add(panel)
-        return outer_scrolled
+        # The ROS buttons start DISABLED: they only work inside the
+        # container shell.  "Enter" additionally needs the container to
+        # actually be RUNNING (checked with docker ps in the background);
+        # until that first check has succeeded it stays disabled, too.
+        self.update_shell_button_state()
+        return panel
 
     def on_unknown_action(self, button, action):
         self.append_log(
@@ -964,6 +991,10 @@ class OmniQuadApp:
         success, returncode, output = self.demo_answer(ssh_command)
         self.append_log("[demo] $ " + ssh_command + "\n" + output)
         on_done(success, returncode, output)
+        # Keep the "Enter container" button in sync with the simulated
+        # container state.
+        self.container_running = self.demo_container_running
+        self.update_shell_button_state()
         return False   # for GLib.idle_add: run only once
 
     def demo_answer(self, ssh_command):
@@ -1050,12 +1081,21 @@ class OmniQuadApp:
         lines = [line for line in output.splitlines() if line.strip()]
         if not lines:
             self.append_log("No containers are running right now.")
+            self.container_running = False
+            self.update_shell_button_state()
             return
         for line in lines:
             if "|" in line:
                 name, status = line.split("|", 1)
                 self.add_container_row(name.strip(), status.strip())
         self.append_log("Found " + str(len(lines)) + " running container(s).")
+
+        # Remember whether OUR container is among them: this decides
+        # whether "Enter PX4 bridge container" may be used.
+        names = [line.split("|", 1)[0].strip() for line in lines]
+        self.container_running = (
+            self.commands["container_name"] in names)
+        self.update_shell_button_state()
 
     def clear_container_list(self):
         """Remove all rows from the container list display."""
@@ -1152,6 +1192,10 @@ class OmniQuadApp:
     def stop_verify_done(self, success, returncode, output):
         name = self.commands["container_name"]
         self.set_drone_buttons_enabled(True)
+        # Update the running state from the verification result.
+        self.container_running = (
+            success and name in output.splitlines())
+        self.update_shell_button_state()
         if not success:
             self.append_log(
                 "WARNING: could not verify the container state "
@@ -1230,8 +1274,13 @@ class OmniQuadApp:
         """SAFETY-CRITICAL: only a verified-stopped drone may shut down."""
         name = self.commands["container_name"]
 
-        # Abort if the check itself failed OR the container is still up.
-        if (not success) or (name in output.splitlines()):
+        # Update the running state from the verification result, then
+        # decide: abort if the check failed OR the container is still up.
+        self.container_running = (
+            success and name in output.splitlines())
+        self.update_shell_button_state()
+        still_running = (not success) or (name in output.splitlines())
+        if still_running:
             message = ("SHUTDOWN ABORTED. Could NOT confirm that the "
                        "container '" + name + "' is stopped "
                        "(docker ps " +
@@ -1368,11 +1417,16 @@ class OmniQuadApp:
     def update_shell_button_state(self):
         """Enable ROS buttons ONLY while inside the container shell.
 
-        The 'Enter' button does the opposite: it is usable only when we
-        are NOT inside yet.
+        The 'Enter' button is the opposite: it is usable only when
+        a) we are NOT inside yet, and
+        b) the last docker ps check saw the container RUNNING.
+           (Unknown / not running -> disabled: there is nothing to
+           enter.)
         """
         inside = self.inside_container_shell
-        self.enter_container_button.set_sensitive(not inside)
+        can_enter = (self.container_running is True)
+        self.enter_container_button.set_sensitive(
+            (not inside) and can_enter)
         for shell_button in self.container_shell_buttons:
             shell_button.set_sensitive(inside)
 
@@ -1420,32 +1474,85 @@ class OmniQuadApp:
         self.send_ctrl_c()
 
     # ------------------------------------------------------------------
-    # Button: List available topics (background channel -> clickable list)
+    # Button: List available topics (typed into terminal, then fetched)
     # ------------------------------------------------------------------
     def on_list_topics(self, button):
+        """List ROS topics.
+
+        On the real drone the command is typed INTO the terminal (we are
+        inside the container there, so `ros2` is available), and after a
+        short wait the printed topics are fetched from the terminal
+        screen into the clickable list.
+        In demo mode the answer is simulated as usual.
+        """
         self.topics_spinner.show()
         self.topics_spinner.start()
-        self.run_ssh_background(
-            "docker exec px4_fastlio_bridge ros2 topic list",
-            self.on_topics_result)
+        if self.demo_mode:
+            # Demo: simulated topics, no terminal behind it.
+            self.run_ssh_background(
+                self.find_terminal_command("list_topics"),
+                self.on_topics_result)
+            return
+        if not self.inside_container_shell:
+            self.topics_spinner.stop()
+            self.topics_spinner.hide()
+            self.append_log(
+                "Enter the container first ('Enter PX4 bridge "
+                "container'), then list the topics again.")
+            return
+        self.type_in_terminal("ros2 topic list")
+        # ros2 needs a moment (the first call even starts its daemon).
+        # After that wait, read the printed topics from the screen.
+        GLib.timeout_add(3000, self.fetch_topics_from_terminal)
 
-    def on_topics_result(self, success, returncode, output):
-        """Fill the clickable topic list with the result."""
+    def fetch_topics_from_terminal(self):
+        """MAIN THREAD: read the topics that 'ros2 topic list' printed.
+
+        Reads the terminal's screen text and keeps every line that looks
+        like a ROS topic (ROS 2 topic names start with '/').
+        """
         self.topics_spinner.stop()
         self.topics_spinner.hide()
-        self.clear_topic_list()
-        self.selected_topic = ""     # the old selection is gone
+        result = self.terminal.get_text_format(Vte.Format.TEXT)
+        # Depending on the VTE version this returns a plain string or a
+        # (text, attributes) tuple -- handle both.
+        screen_text = result[0] if isinstance(result, tuple) else result
+        topics = []
+        seen = set()
+        for line in screen_text.splitlines():
+            line = line.strip()
+            if line.startswith("/") and line not in seen:
+                seen.add(line)
+                topics.append(line)
+        if not topics:
+            self.clear_topic_list()
+            self.selected_topic = ""
+            self.append_log(
+                "No topics found on the terminal screen. Is the Fast-LIO "
+                "container running its ROS nodes? The first call can "
+                "take a few seconds -- try again shortly.")
+            return False
+        self.fill_topic_list(topics)
+        return False
 
+    def on_topics_result(self, success, returncode, output):
+        """Demo mode: fill the topic list from the simulated answer."""
+        self.topics_spinner.stop()
+        self.topics_spinner.hide()
         if not success:
+            self.clear_topic_list()
+            self.selected_topic = ""
             self.append_log(
                 "Could not list ROS topics (see the log above for "
-                "details). Are you inside the container, and is the "
-                "Fast-LIO container running?")
+                "details).")
             return
         topics = [line.strip() for line in output.splitlines() if line.strip()]
-        if not topics:
-            self.append_log("No ROS topics found.")
-            return
+        self.fill_topic_list(topics)
+
+    def fill_topic_list(self, topics):
+        """Put the topics into the clickable list and log the count."""
+        self.selected_topic = ""     # the old selection is gone
+        self.clear_topic_list()
         for topic in topics:
             self.add_topic_row(topic)
         self.append_log(
