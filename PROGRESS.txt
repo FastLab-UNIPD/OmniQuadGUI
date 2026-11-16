@@ -63,7 +63,16 @@ Stage 3 (all 22 headless checks pass):
   again by Leave (Ctrl+C, 0.5 s, exit; only allowed while flag set) --
   leave_container_shell() now also calls update_shell_button_state(),
   so stop/shutdown sequences reset the buttons too.
-- "Stop current command" sends Ctrl+C (b"\x03").
+- "Stop current command" sends Ctrl+C (b"\x03"); it is a BIG button
+  (CSS class big-stop-button, min height 50) pinned to the bottom of
+  the LEFT (host) column, but still gated on being inside the shell.
+- Echo commands (ros2 topic echo ...) now open their OWN terminal
+  window each (open_echo_window): ssh over the ControlPath socket ->
+  wait spawn -> type "docker exec -it px4_fastlio_bridge bash" -> wait
+  1.5 s -> type the echo command. Several echo windows can run at once;
+  closing a window stops that echo (echo_windows list, destroy hook).
+  Demo mode shows a note instead of spawning. hz commands still type
+  into the main terminal. build_spawn_envv() extracted and shared.
 - "List available topics": types "ros2 topic list" INTO the terminal
   (ros2 only exists inside the container shell), waits 3 s, then reads
   the printed topics from the terminal screen
@@ -72,7 +81,8 @@ Stage 3 (all 22 headless checks pass):
   spinner; clicking a row sets selected_topic. The old background
   "docker exec ... ros2 topic list" variant failed on the real drone
   (non-interactive shell has no ROS env) - do not bring it back.
-- "Echo selected topic": types "ros2 topic echo <selection>".
+- "Echo selected topic": opens an echo window for
+  "ros2 topic echo <selection>" (see echo windows below).
 - Fixed buttons type their commands.json command (odometry echo,
   --field pose.pose.position, covariances grep, rmem_max, IMU/LiDAR hz).
 - Helpers: type_in_terminal(cmd) and send_ctrl_c() log "[terminal] $"

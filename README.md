@@ -204,7 +204,11 @@ inside the container shell:
 
 ### Stop current command
 Sends Ctrl+C into the terminal — use it to stop `ros2 topic echo` or
-`ros2 topic hz`, which run forever until interrupted.
+`ros2 topic hz`, which run forever until interrupted. It is the **big
+button at the bottom of the left column** (easy to reach), and it is
+usable only while inside the container shell, like the other ROS
+buttons. In the separate echo windows, press Ctrl+C directly in that
+window's terminal instead.
 
 ### List available topics
 Types `ros2 topic list` **into the terminal** — the same place where you
@@ -232,6 +236,15 @@ Each types its fixed command into the terminal (definitions live in
 
 Remember: echo/hz print continuously — press **Stop current command**
 (or Ctrl+C in the terminal) when you have seen enough.
+
+### Separate echo windows
+Every `ros2 topic echo ...` button (🔁 Echo selected topic, 🧭 Verify
+odometry, 📍 Specific position data) opens its **own terminal window**:
+it starts an ssh session (reusing the master connection, no password),
+enters the container and starts the echo inside it. Because each echo
+has its own window, you can echo **several topics at the same time**.
+Close a window (or press Ctrl+C inside it) to stop that echo. The `hz`
+commands keep running in the main terminal as before.
 
 ## 7. Current status
 

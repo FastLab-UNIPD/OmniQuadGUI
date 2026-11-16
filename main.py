@@ -165,6 +165,10 @@ def load_button_styles():
     .warm-action:hover {
         background-color: #c81e26;
     }
+    .big-stop-button {
+        font-size: 15px;
+        padding: 12px;
+    }
     """
     provider = Gtk.CssProvider()
     provider.load_from_data(css)
@@ -269,6 +273,9 @@ class OmniQuadApp:
         self.demo_mode = False
         # The first window, so we can close it when the main one opens.
         self.start_window = None
+        # Separate echo windows (stage 3): one per running echo command,
+        # so several topics can be echoed at the same time.
+        self.echo_windows = []
 
         self.show_start_window()
 
@@ -666,6 +673,21 @@ class OmniQuadApp:
         menu.popup_at_pointer(event)
         return True                # we handled the right click
 
+    def build_spawn_envv(self):
+        """Build the environment list for ssh processes started here.
+
+        Copies the normal environment and adds SSHPASS, so `sshpass -e`
+        (or a fallback password prompt) can always authenticate.  The
+        password never appears on a command line or on disk.
+        """
+        envv = []
+        for key, value in os.environ.items():
+            if key == "SSHPASS":
+                continue          # replace any pre-existing value
+            envv.append(key + "=" + value)
+        envv.append("SSHPASS=" + self.password)
+        return envv
+
     def start_ssh_session(self, ip, user):
         """Start `sshpass -e ssh ... rock@<ip>` inside the VTE terminal.
 
@@ -676,12 +698,7 @@ class OmniQuadApp:
         # Build the exact environment the ssh process will see.  We copy
         # the normal environment, then add SSHPASS.  The password never
         # appears on a command line and is never written to disk.
-        envv = []
-        for key, value in os.environ.items():
-            if key == "SSHPASS":
-                continue          # replace any pre-existing value
-            envv.append(key + "=" + value)
-        envv.append("SSHPASS=" + self.password)
+        envv = self.build_spawn_envv()
 
         argv = ["sshpass", "-e"] + build_ssh_argv(
             user, ip,
@@ -756,9 +773,31 @@ class OmniQuadApp:
         """
         columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         columns.set_border_width(10)
-        columns.pack_start(self.build_host_panel(), False, False, 0)
+        # These lists are filled by the two column builders below.
+        self.container_shell_buttons = []   # all shell buttons except Enter
+        # The big "Stop current command" button lives at the BOTTOM of
+        # the left column; create it first so both builders can see it.
+        self.stop_command_button = self.make_stop_command_button()
+        # The host panel expands vertically so the stop button can be
+        # pinned to its bottom edge.
+        columns.pack_start(self.build_host_panel(), True, True, 0)
         columns.pack_start(self.build_ros_panel(), False, False, 0)
         return columns
+
+    def make_stop_command_button(self):
+        """Create the BIG 'Stop current command' button (sends Ctrl+C).
+
+        It belongs to the container shell buttons (enabled only while
+        inside the container shell), but is DISPLAYED at the bottom of
+        the left column because it is needed often (echo/hz run
+        forever until stopped).
+        """
+        button = Gtk.Button(label=self.find_terminal_label("stop_command"))
+        button.connect("clicked", self.on_stop_command)
+        button.set_size_request(-1, 50)    # taller than normal buttons
+        button.get_style_context().add_class("big-stop-button")
+        self.container_shell_buttons.append(button)
+        return button
 
     def build_host_panel(self):
         """Column 1: host commands + the container list display."""
@@ -841,6 +880,10 @@ class OmniQuadApp:
         list_scrolled.add(self.container_listbox)
         panel.add(list_scrolled)
 
+        # Bottom of the left column: the big "Stop current command".
+        panel.add(Gtk.Separator())
+        panel.pack_end(self.stop_command_button, False, False, 0)
+
         return panel
 
     def build_ros_panel(self):
@@ -853,8 +896,8 @@ class OmniQuadApp:
         # These buttons are typed INTO the terminal, so they only make
         # sense when the user is inside the container shell.  The "Enter"
         # button enables them; "Leave" disables them again.
+        # (container_shell_buttons was initialized in build_right_panel.)
         self.enter_container_button = None
-        self.container_shell_buttons = []   # all buttons except "Enter"
         self.selected_topic = ""            # topic clicked in the list
         self.echo_selected_button = None    # placed next to the topic list
 
@@ -869,8 +912,9 @@ class OmniQuadApp:
                 button.connect("clicked", self.on_leave_container)
                 self.container_shell_buttons.append(button)
             elif action == "stop_command":
-                button.connect("clicked", self.on_stop_command)
-                self.container_shell_buttons.append(button)
+                # Placed at the bottom of the LEFT column instead (see
+                # build_right_panel / build_host_panel).
+                continue
             elif action == "list_topics":
                 button.connect("clicked", self.on_list_topics)
                 self.container_shell_buttons.append(button)
@@ -1385,6 +1429,13 @@ class OmniQuadApp:
                 return entry.get("command", "")
         return ""
 
+    def find_terminal_label(self, action):
+        """Look up a terminal button's label in commands.json."""
+        for entry in self.commands.get("terminal_buttons", []):
+            if entry.get("action") == action:
+                return entry.get("label", "")
+        return ""
+
     # ==================================================================
     # STAGE 3: container shell buttons and ROS topic inspection
     # ==================================================================
@@ -1586,7 +1637,8 @@ class OmniQuadApp:
                 "No topic selected: click a topic in the ROS topics "
                 "list first.")
             return
-        self.type_in_terminal("ros2 topic echo " + self.selected_topic)
+        # Each echo runs in its own terminal window (several at once).
+        self.open_echo_window("ros2 topic echo " + self.selected_topic)
 
     # ------------------------------------------------------------------
     # Buttons with fixed commands (typed into the terminal)
@@ -1597,7 +1649,95 @@ class OmniQuadApp:
             self.append_log(
                 "This button has no command configured in commands.json.")
             return
+        if command.startswith("ros2 topic echo"):
+            # Echo commands run FOREVER until stopped: give each one
+            # its own terminal window, so several can run at once.
+            self.open_echo_window(command)
+            return
         self.type_in_terminal(command)
+
+    # ------------------------------------------------------------------
+    # Separate echo terminal windows (one per echo command)
+    # ------------------------------------------------------------------
+    def open_echo_window(self, command):
+        """Open a NEW terminal window that runs one echo command.
+
+        Every click gets its own window and its own ssh session (the
+        session reuses the master connection through the control
+        socket, so no password is needed).  That way several topics can
+        be echoed at the same time, and each window can be closed
+        (or Ctrl+C'd) independently.
+        """
+        topic = command.replace("ros2 topic echo ", "")
+        window = Gtk.Window(title="Echo - " + topic)
+        window.set_default_size(750, 500)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(
+            Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.ALWAYS)
+        terminal = Vte.Terminal()
+        terminal.set_font(Pango.FontDescription("Monospace 11"))
+        terminal.set_scrollback_lines(5000)
+        scrolled.add(terminal)
+        window.add(scrolled)
+        self.echo_windows.append(window)
+        # Remove it from our list when the user closes the window.
+        window.connect("destroy", self.on_echo_window_destroy)
+        window.show_all()
+        terminal.grab_focus()
+
+        if self.demo_mode:
+            # Demo: no ssh session exists.  Show what WOULD happen.
+            terminal.feed(
+                ("DEMO MODE - no ssh session is open.\n"
+                 "A real connection would run, in a separate terminal:\n"
+                 "  docker exec -it px4_fastlio_bridge bash\n"
+                 "  " + command + "\n").encode())
+            return
+
+        # argv: an interactive ssh session over the master socket.
+        argv = [
+            "ssh",
+            "-o", "ConnectTimeout=10",
+            "-o", "ControlPath=" + self.control_socket,
+            self.config["user"] + "@" + self.config["ip"],
+        ]
+
+        def spawn_done(spawn_terminal, pid, error, command=command):
+            """After ssh is up: enter the container, then echo."""
+            if error is not None:
+                spawn_terminal.feed(
+                    ("Could not start ssh: " + error.message + "\n").encode())
+                return
+            # Step 1: enter the container shell (interactive bash, so
+            # the ROS environment is loaded -- the same way the main
+            # window's "Enter container" button works).
+            spawn_terminal.feed_child(
+                b"docker exec -it px4_fastlio_bridge bash\n")
+
+            def type_echo():
+                # Step 2 (1.5 s later, bash needs a moment): the echo.
+                spawn_terminal.feed_child((command + "\n").encode())
+                return False
+
+            GLib.timeout_add(1500, type_echo)
+
+        terminal.spawn_async(
+            Vte.PtyFlags.DEFAULT,
+            None,
+            argv,
+            self.build_spawn_envv(),
+            GLib.SpawnFlags.SEARCH_PATH,
+            None,
+            None,
+            -1,
+            None,
+            spawn_done,
+        )
+
+    def on_echo_window_destroy(self, window):
+        """Forget the window when it is closed (the echo stops with it)."""
+        if window in self.echo_windows:
+            self.echo_windows.remove(window)
 
     # ------------------------------------------------------------------
     # Closing the app cleanly
