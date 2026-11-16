@@ -1,0 +1,131 @@
+OMNIQUADGUI - PROGRESS / HANDOFF SUMMARY
+========================================
+(Generated after stage 3 completion. Paste into a new session to
+restore context.)
+
+PROJECT
+-------
+OmniQuadGUI: a Python 3 / GTK 3 desktop app for Ubuntu with an embedded
+VTE terminal that connects over SSH to a drone's onboard computer
+(Radxa Rock 5B, ROS 2, Docker). It manages containers and inspects ROS
+topics. It does NOT control flight. User is a mechanical engineering
+student with basic Python: code must stay simple, readable, heavily
+commented, no advanced patterns. Plain-English error messages.
+
+Folder: /home/pil8/Desktop/OmniQuad_Stuff/OmniQuadGUI
+Desktop shortcut: /home/pil8/Desktop/OmniQuadGUI.desktop
+(allow-launching granted; Icon= absolute path to omniquadgui.png)
+
+FILES
+-----
+- main.py        whole app (~1500 lines, all stages)
+- config.json    user:"rock", ip:"" (last used), dry_run:true,
+                 demo_user:"demo", demo_password:"demo"
+- commands.json  button definitions as data (container_name:
+                 px4_fastlio_bridge, host_buttons, terminal_buttons)
+- omniquadgui.png / omniquadgui.svg   logo
+- README.md      install/run/explanation for all 3 stages
+- PROGRESS.txt   this file
+- OmniQuadGUI.txt, prompt1.txt   user's own notes (do not touch)
+
+DEPENDENCIES
+------------
+python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, sshpass
+
+STATUS: ALL THREE STAGES COMPLETE AND TESTED
+--------------------------------------------
+Stage 1 (tested on real drone):
+- Start window: User + IP + masked password, Connect button, demo tip.
+- Background ssh check first (sshpass -e ssh ... echo ok), plain-English
+  errors. Main window: LEFT 50/50 vertical Paned = terminal + background
+  command log; RIGHT = scrollable button panel.
+- Real session: sshpass -e ssh -o ControlMaster=yes -o ControlPath=
+  <socket in mkdtemp omniquad-*> -o StrictHostKeyChecking=accept-new.
+- Close: ssh -O exit, temp dir removed. Start window closes when main
+  opens (disconnect its Gtk.main_quit handler first).
+
+Stage 2 (confirmed by user):
+- Host buttons from commands.json: docker ps check (list in GUI,
+  permission-denied explanation), start container, SAFE stop sequence
+  (check -> leave shell if flag -> stoprm -> verify), two-step shutdown
+  with SAFETY-CRITICAL verify: abort + loud dialog if container still
+  running or check failed; dry_run prints instead of shutting down;
+  real shutdown = sudo -S -p '' shutdown now with password via ssh
+  stdin; afterwards buttons disabled, calm connection-lost message.
+- Remote reads in background threads:
+  ssh -o ControlPath=<socket> rock@<ip> "<command>"; GUI updates only
+  via GLib.idle_add; every command+output appended to the log area.
+
+Stage 3 (all 22 headless checks pass):
+- Terminal buttons built from commands.json. ROS buttons DISABLED until
+  "Enter PX4 bridge container" is used (types docker exec -it
+  px4_fastlio_bridge bash, sets inside_container_shell=True); disabled
+  again by Leave (Ctrl+C, 0.5 s, exit; only allowed while flag set) --
+  leave_container_shell() now also calls update_shell_button_state(),
+  so stop/shutdown sequences reset the buttons too.
+- "Stop current command" sends Ctrl+C (b"\x03").
+- "List available topics": background "docker exec px4_fastlio_bridge
+  ros2 topic list" -> clickable SINGLE-selection Gtk.ListBox with its
+  own spinner; clicking a row sets selected_topic.
+- "Echo selected topic": types "ros2 topic echo <selection>".
+- Fixed buttons type their commands.json command (odometry echo,
+  --field pose.pose.position, covariances grep, rmem_max, IMU/LiDAR hz).
+- Helpers: type_in_terminal(cmd) and send_ctrl_c() log "[terminal] $"
+  and are demo-safe; find_terminal_command(action) reads commands.json.
+
+EXTRAS (all user-requested, all tested)
+---------------------------------------
+- Right-click Copy/Paste menu on terminal; Ctrl+Shift+V/C shortcuts.
+- 50/50 terminal/log split (draggable).
+- Confirm/Cancel row hidden until Shutdown armed (show_all() reveals
+  everything -> hide explicitly after show_all; no_show_all ignores
+  show_all even on itself).
+- Auto container check after Start finishes.
+- Green dot on Start, red dot on Stop (make_dot_button, Pango markup);
+  whale on Check containers, skull on Shutdown (make_emoji_button).
+- Shutdown button "warm-action" CSS (load_button_styles): bg #e01b24,
+  white text; Confirm uses built-in destructive-action.
+- Gtk.Spinner beside container list label (and beside topics label).
+- Demo mode (demo/demo): full GUI, no ssh at all, title
+  "DEMO (not connected)", simulated drone state (demo_container_running,
+  demo_answer: docker ps, nuc_helper run/stoprm, ros2 topic list).
+  Real shutdown guarded. Demo banner in terminal = PLAIN LINES only
+  (user hates deformed ASCII art).
+- Logo: faded (opacity 0.2, 240px) behind login form via Gtk.Overlay
+  (logo = main child/bottom, form = add_overlay/top);
+  set_default_icon_from_file for all windows; shortcut icon absolute
+  path to omniquadgui.png.
+
+IMPORTANT TECHNICAL LESSONS (do not regress)
+--------------------------------------------
+- VTE spawn_async on this Ubuntu:
+  (pty_flags, working_dir, argv, envv, GLib.SpawnFlags.SEARCH_PATH,
+   child_setup, child_setup_data, timeout, cancellable, callback)
+  -> (Vte.PtyFlags.DEFAULT, None, argv, envv, SEARCH_PATH, None, None,
+      -1, None, cb). Wrong order = invisible TypeError from .desktop.
+- main() wraps app in try/except: unexpected exceptions show a
+  Gtk.MessageDialog with traceback (hidden-console safety net).
+- Test pattern: env -i DISPLAY=:0 HOME=... PATH=... python3; stub
+  start_ssh_session; demo login OR monkeypatch run_ssh_background with
+  canned queue (pop per call); test sequences SEQUENTIALLY; stub
+  dialogs. User's login shell has ROS Jazzy env - clean env needed.
+- Password rules: SSHPASS env var only (sshpass -e), never command
+  line/logs/disk; sudo password via ssh stdin only; config.json never
+  stores passwords. Demo creds are not security.
+- Never send a bare `exit` unless inside_container_shell is True.
+
+HOW TO RUN
+----------
+cd /home/pil8/Desktop/OmniQuad_Stuff/OmniQuadGUI && python3 main.py
+or double-click the desktop shortcut (if icon/launcher misbehaves:
+gio set ~/Desktop/OmniQuadGUI.desktop metadata::trusted true).
+Demo login: user "demo", password "demo".
+
+NEXT STEPS / IDEAS (none committed)
+-----------------------------------
+- All three planned stages are done; any further work is new scope.
+- Known manual-exit limitation: if the user types `exit` by hand inside
+  the container, the app's flag stays True until Leave/Stop/Shutdown is
+  used. Documented in README ("always use the Leave button").
+- dry_run defaults to true; user should flip it in config.json only
+  when a real shutdown from the GUI is wanted.

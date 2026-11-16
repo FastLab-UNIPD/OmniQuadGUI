@@ -177,7 +177,51 @@ normally (stopping the container, verification) **except** the final
 Set `"dry_run": false` in `config.json` only when you really want the
 drone to shut down from the app.
 
-## 6. Current status
+## 6. Stage 3: container shell and ROS buttons
+
+The right panel has a **Container shell / ROS (terminal)** section. These
+buttons *type commands into the terminal* (and the log notes each one),
+so they only work while you are inside the container shell:
+
+### Enter PX4 bridge container / Leave container
+- **Enter** types `docker exec -it px4_fastlio_bridge bash` into the
+  terminal and flips the app's `inside_container_shell` flag. Only then
+  do the ROS buttons become usable.
+- **Leave** sends Ctrl+C, waits 0.5 s, then types `exit`. A bare `exit`
+  is *only ever* sent while the app knows you are inside the container —
+  on the drone's normal shell it would close the whole ssh session.
+  **Please always leave with the button**, not by typing `exit` by hand:
+  the app cannot see manual exits, and its flag would go out of sync.
+
+### Stop current command
+Sends Ctrl+C into the terminal — use it to stop `ros2 topic echo` or
+`ros2 topic hz`, which run forever until interrupted.
+
+### List available topics
+Runs `docker exec px4_fastlio_bridge ros2 topic list` in the background
+channel (works from the host shell, no ROS sourcing needed). The topics
+appear in a list below the buttons; **click one** to select it.
+
+### Echo selected topic
+Types `ros2 topic echo <the topic you clicked>` into the terminal.
+
+### The fixed ROS buttons
+Each types its fixed command into the terminal (definitions live in
+`commands.json`):
+
+| Button | Command typed |
+|---|---|
+| Verify odometry | `ros2 topic echo /Odometry` |
+| Specific position data | `ros2 topic echo /Odometry --field pose.pose.position` |
+| Verify covariances | `grep -E "acc_cov\|gyr_cov" /root/ros2_ws/install/fast_lio/share/fast_lio/config/mid360_override.yaml` |
+| Verify network buffer sizes | `cat /proc/sys/net/core/rmem_max` |
+| Check Livox IMU frequency | `ros2 topic hz /livox/imu` |
+| Check Livox LiDAR frequency | `ros2 topic hz /livox/lidar` |
+
+Remember: echo/hz print continuously — press **Stop current command**
+(or Ctrl+C in the terminal) when you have seen enough.
+
+## 7. Current status
 
 - [x] **Stage 1** — start window, connection check with plain-English
       errors, main window with the always-visible SSH terminal.
@@ -185,5 +229,7 @@ drone to shut down from the app.
       start/stop the Fast-LIO container safely, two-step shutdown
       (with `dry_run` on), plus the background command log under the
       terminal.
-- [ ] **Stage 3** — container shell entry/exit with safety flag, ROS topic
-      list, echo/hz buttons.
+- [x] **Stage 3** — container shell entry/exit with safety flag, ROS
+      topic list (clickable), echo/hz buttons.
+
+All three stages are complete.

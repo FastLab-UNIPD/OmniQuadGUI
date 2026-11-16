@@ -577,9 +577,9 @@ class OmniQuadApp:
         # Confirm/Cancel row.  It must only appear after the user clicks
         # "Shutdown", so hide it again explicitly.
         self.shutdown_confirm_box.hide()
-        # Same for the loading spinner: hidden until a container check
-        # is actually running.
+        # Same for the loading spinners: hidden until actually used.
         self.container_spinner.hide()
+        self.topics_spinner.hide()
 
         # Put the left divider at 50/50 now that the real window size
         # is known (see split_left_half above).
@@ -815,10 +815,83 @@ class OmniQuadApp:
         list_scrolled.add(self.container_listbox)
         panel.add(list_scrolled)
 
-        panel.add(Gtk.Label(
-            label="(Container shell and ROS buttons arrive in stage 3.)"))
+        panel.add(Gtk.Separator())   # visual divider between sections
 
-        return panel
+        # ----------------------------------------------------------------
+        # Container shell & ROS buttons (stage 3)
+        # ----------------------------------------------------------------
+        # These buttons are typed INTO the terminal, so they only make
+        # sense when the user is inside the container shell.  The "Enter"
+        # button enables them; "Leave" disables them again.
+        panel.add(Gtk.Label(label="Container shell / ROS (terminal)"))
+
+        self.enter_container_button = None
+        self.container_shell_buttons = []   # all buttons except "Enter"
+        self.topics_listbox = None
+        self.topics_spinner = None
+        self.selected_topic = ""            # topic clicked in the list
+
+        for entry in self.commands.get("terminal_buttons", []):
+            action = entry.get("action", "")
+            label = entry["label"]
+            button = Gtk.Button(label=label)
+            if action == "enter_container":
+                button.connect("clicked", self.on_enter_container)
+                self.enter_container_button = button
+            elif action == "leave_container":
+                button.connect("clicked", self.on_leave_container)
+                self.container_shell_buttons.append(button)
+            elif action == "stop_command":
+                button.connect("clicked", self.on_stop_command)
+                self.container_shell_buttons.append(button)
+            elif action == "list_topics":
+                button.connect("clicked", self.on_list_topics)
+                self.container_shell_buttons.append(button)
+            elif action == "echo_selected" and not entry.get("command"):
+                # No fixed command: echo whatever topic is selected.
+                button.connect("clicked", self.on_echo_selected_topic)
+                self.container_shell_buttons.append(button)
+            else:
+                # A fixed command typed into the terminal on each click.
+                button.connect("clicked", self.on_send_to_terminal,
+                               entry.get("command", ""))
+                self.container_shell_buttons.append(button)
+            panel.add(button)
+
+        # ROS topic list (filled by "List available topics")
+        topic_row = Gtk.Box(spacing=6)
+        topic_label = Gtk.Label(label="ROS topics (click one to select):")
+        topic_label.set_xalign(0.0)
+        self.topics_spinner = Gtk.Spinner()
+        topic_row.pack_start(topic_label, True, True, 0)
+        topic_row.pack_start(self.topics_spinner, False, False, 0)
+        panel.add(topic_row)
+
+        topics_scrolled = Gtk.ScrolledWindow()
+        topics_scrolled.set_policy(
+            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        topics_scrolled.set_size_request(-1, 120)
+        self.topics_listbox = Gtk.ListBox()
+        # SINGLE selection: one topic can be highlighted and echoed.
+        self.topics_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.topics_listbox.connect("row-activated", self.on_topic_selected)
+        topics_scrolled.add(self.topics_listbox)
+        panel.add(topics_scrolled)
+
+        # The ROS buttons start DISABLED: they only work inside the
+        # container shell, which starts with "Enter PX4 bridge container".
+        self.enter_container_button.set_sensitive(True)
+        for shell_button in self.container_shell_buttons:
+            shell_button.set_sensitive(False)
+
+        # The whole column is now taller than the window: put it inside
+        # a scrollable area.
+        outer_scrolled = Gtk.ScrolledWindow()
+        outer_scrolled.set_policy(
+            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        outer_scrolled.set_size_request(300, -1)
+        outer_scrolled.add(panel)
+        return outer_scrolled
 
     def on_unknown_action(self, button, action):
         self.append_log(
@@ -924,6 +997,10 @@ class OmniQuadApp:
                 return True, 0, ("Demo: container '" + name
                                  + "' stopped and removed.\n")
             return False, 1, "Error: container is not running (demo).\n"
+
+        # List ROS topics: a small, realistic-looking fake list.
+        if "ros2 topic list" in ssh_command:
+            return True, 0, ("/Odometry\n/livox/imu\n/livox/lidar\n/tf\n")
 
         # Anything else gets a neutral simulated answer.
         return True, 0, "(demo mode: simulated output for this command)\n"
@@ -1098,11 +1175,14 @@ class OmniQuadApp:
         session), and clears the inside_container_shell flag.
         `on_left` is called in the main thread afterwards.
         """
-        self.terminal.feed_child(b"\x03")   # Ctrl+C
+        if not self.demo_mode:
+            self.terminal.feed_child(b"\x03")   # Ctrl+C
 
         def type_exit():
-            self.terminal.feed_child(b"exit\n")
+            if not self.demo_mode:
+                self.terminal.feed_child(b"exit\n")
             self.inside_container_shell = False
+            self.update_shell_button_state()   # ROS buttons off again
             on_left()
             return False   # tells GLib.timeout_add: do not call me again
 
@@ -1248,6 +1328,169 @@ class OmniQuadApp:
             if entry.get("action") == action:
                 return entry.get("command", "")
         return ""
+
+    def find_terminal_command(self, action):
+        """Like find_command, but looks in the terminal_buttons section."""
+        for entry in self.commands.get("terminal_buttons", []):
+            if entry.get("action") == action:
+                return entry.get("command", "")
+        return ""
+
+    # ==================================================================
+    # STAGE 3: container shell buttons and ROS topic inspection
+    # ==================================================================
+
+    # ------------------------------------------------------------------
+    # Helpers for typing into the terminal
+    # ------------------------------------------------------------------
+    def type_in_terminal(self, command):
+        """Type a command (plus Enter) into the terminal, and log it.
+
+        In demo mode there is no ssh session, so nothing is typed --
+        only the log entry is written so the flow can still be tested.
+        """
+        self.append_log("[terminal] $ " + command)
+        if self.demo_mode:
+            self.append_log(
+                "(demo: nothing typed - there is no ssh session)")
+            return
+        self.terminal.feed_child((command + "\n").encode())
+
+    def send_ctrl_c(self):
+        """Send Ctrl+C into the terminal (stops echo/hz/running command)."""
+        self.append_log("[terminal] (sending Ctrl+C)")
+        if self.demo_mode:
+            self.append_log(
+                "(demo: nothing sent - there is no ssh session)")
+            return
+        self.terminal.feed_child(b"\x03")   # byte 3 = Ctrl+C
+
+    def update_shell_button_state(self):
+        """Enable ROS buttons ONLY while inside the container shell.
+
+        The 'Enter' button does the opposite: it is usable only when we
+        are NOT inside yet.
+        """
+        inside = self.inside_container_shell
+        self.enter_container_button.set_sensitive(not inside)
+        for shell_button in self.container_shell_buttons:
+            shell_button.set_sensitive(inside)
+
+    # ------------------------------------------------------------------
+    # Button: Enter PX4 bridge container
+    # ------------------------------------------------------------------
+    def on_enter_container(self, button):
+        if self.inside_container_shell:
+            self.append_log("Already inside the container shell.")
+            return
+        command = self.find_terminal_command("enter_container")
+        # NOTE: this assumes the terminal is at the drone's normal shell
+        # prompt (which is true right after connecting).
+        self.type_in_terminal(command)
+        self.inside_container_shell = True
+        self.update_shell_button_state()
+        self.append_log(
+            "Entered container shell. ROS buttons enabled. "
+            "Use 'Leave container' to exit it -- please always use that "
+            "button, never a bare 'exit'.")
+
+    # ------------------------------------------------------------------
+    # Button: Leave container
+    # ------------------------------------------------------------------
+    def on_leave_container(self, button):
+        if not self.inside_container_shell:
+            self.append_log(
+                "Not inside the container shell (use 'Enter PX4 bridge "
+                "container' first).")
+            return
+        # Block all shell buttons while leaving (double clicks could
+        # type 'exit' twice).
+        self.enter_container_button.set_sensitive(False)
+        for shell_button in self.container_shell_buttons:
+            shell_button.set_sensitive(False)
+        self.leave_container_shell(self.on_left_container_shell)
+
+    def on_left_container_shell(self):
+        self.append_log("Left the container shell. ROS buttons disabled.")
+
+    # ------------------------------------------------------------------
+    # Button: Stop current command (Ctrl+C, needed for echo/hz)
+    # ------------------------------------------------------------------
+    def on_stop_command(self, button):
+        self.send_ctrl_c()
+
+    # ------------------------------------------------------------------
+    # Button: List available topics (background channel -> clickable list)
+    # ------------------------------------------------------------------
+    def on_list_topics(self, button):
+        self.topics_spinner.show()
+        self.topics_spinner.start()
+        self.run_ssh_background(
+            "docker exec px4_fastlio_bridge ros2 topic list",
+            self.on_topics_result)
+
+    def on_topics_result(self, success, returncode, output):
+        """Fill the clickable topic list with the result."""
+        self.topics_spinner.stop()
+        self.topics_spinner.hide()
+        self.clear_topic_list()
+        self.selected_topic = ""     # the old selection is gone
+
+        if not success:
+            self.append_log(
+                "Could not list ROS topics (see the log above for "
+                "details). Are you inside the container, and is the "
+                "Fast-LIO container running?")
+            return
+        topics = [line.strip() for line in output.splitlines() if line.strip()]
+        if not topics:
+            self.append_log("No ROS topics found.")
+            return
+        for topic in topics:
+            self.add_topic_row(topic)
+        self.append_log(
+            "Found " + str(len(topics)) + " ROS topic(s). Click one, "
+            "then use 'Echo selected topic'.")
+
+    def clear_topic_list(self):
+        for child in self.topics_listbox.get_children():
+            self.topics_listbox.remove(child)
+
+    def add_topic_row(self, topic):
+        row = Gtk.ListBoxRow()
+        label = Gtk.Label(label=topic)
+        label.set_xalign(0.0)
+        row.add(label)
+        self.topics_listbox.add(row)
+        self.topics_listbox.show_all()
+
+    def on_topic_selected(self, listbox, row):
+        """A topic row was clicked: remember it for 'Echo selected topic'."""
+        label = row.get_child()
+        self.selected_topic = label.get_text()
+        self.append_log("Topic selected: " + self.selected_topic)
+
+    # ------------------------------------------------------------------
+    # Button: Echo selected topic
+    # ------------------------------------------------------------------
+    def on_echo_selected_topic(self, button):
+        if not self.selected_topic:
+            self.append_log(
+                "No topic selected: click a topic in the ROS topics "
+                "list first.")
+            return
+        self.type_in_terminal("ros2 topic echo " + self.selected_topic)
+
+    # ------------------------------------------------------------------
+    # Buttons with fixed commands (typed into the terminal)
+    # ------------------------------------------------------------------
+    def on_send_to_terminal(self, button, command):
+        """Type a fixed command from commands.json into the terminal."""
+        if not command:
+            self.append_log(
+                "This button has no command configured in commands.json.")
+            return
+        self.type_in_terminal(command)
 
     # ------------------------------------------------------------------
     # Closing the app cleanly
