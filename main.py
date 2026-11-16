@@ -47,7 +47,7 @@ import time
 import gi
 gi.require_version("Gtk", "3.0")      # make sure we get GTK 3, not GTK 4
 gi.require_version("Vte", "2.91")     # the VTE version Ubuntu ships for GTK 3
-from gi.repository import Gtk, GLib, Vte, Pango
+from gi.repository import Gtk, GLib, Vte, Pango, Gdk
 
 
 # ----------------------------------------------------------------------------
@@ -71,6 +71,10 @@ def load_config():
         "user": "rock",     # login name on the drone
         "ip": "",           # last successfully used IP (empty at first)
         "dry_run": True,    # stage 2 will use this for the shutdown button
+        # Demo login: with this user + password the GUI opens WITHOUT
+        # connecting to the drone (commands are simulated).
+        "demo_user": "demo",
+        "demo_password": "demo",
     }
     try:
         with open(CONFIG_FILE, "r") as f:
@@ -115,6 +119,59 @@ def build_ssh_argv(user, ip, extra_options=(), remote_command=None):
     if remote_command is not None:
         argv.extend(remote_command)
     return argv
+
+
+def make_dot_button(dot_color, text):
+    """A button whose label starts with a coloured dot (●).
+
+    The dot is a coloured character inside the label, done with Pango
+    markup.  Example: a green dot before "Start Fast-LIO container".
+    """
+    button = Gtk.Button()
+    label = Gtk.Label()
+    label.set_markup(
+        '<span foreground="' + dot_color + '">&#9679;</span> ' + text)
+    button.add(label)
+    return button
+
+
+def make_emoji_button(prefix, text):
+    """A button whose label starts with an emoji (e.g. a whale or skull).
+
+    `prefix` is a short string such as "\N{SPOUTING WHALE}".  The emoji
+    comes from the system emoji font, so no colour markup is needed.
+    """
+    button = Gtk.Button()
+    label = Gtk.Label()
+    label.set_markup(prefix + " " + text)
+    button.add(label)
+    return button
+
+
+def load_button_styles():
+    """Register a few small CSS styles used by the buttons.
+
+    The shutdown button gets a red background with white text (the same
+    red family as GTK's destructive-action style, which the "Confirm
+    shutdown" button uses).  The white "color" is the TEXT colour; the
+    red only paints the background, never the text itself.
+    """
+    css = b"""
+    .warm-action {
+        background-color: #e01b24;
+        color: #ffffff;
+    }
+    .warm-action:hover {
+        background-color: #c81e26;
+    }
+    """
+    provider = Gtk.CssProvider()
+    provider.load_from_data(css)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(),
+        provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
 
 
 def explain_ssh_error(returncode, output, ip, user):
@@ -163,6 +220,9 @@ def explain_ssh_error(returncode, output, ip, user):
 class OmniQuadApp:
 
     def __init__(self):
+        # Button colours and styles (dot buttons, warm shutdown button).
+        load_button_styles()
+
         # ---- shared state ----
         self.config = load_config()          # user / ip / dry_run
         self.commands = load_config_commands()
@@ -189,6 +249,14 @@ class OmniQuadApp:
         # Set to True once "sudo shutdown" was really sent, so the
         # "connection lost" message in the terminal stays calm.
         self.shutdown_was_sent = False
+        # Demo mode state: pretend the Fast-LIO container is running.
+        self.demo_container_running = True
+        # Demo mode: True when the demo login was used.  The GUI is then
+        # fully usable but NOTHING connects to a drone; all remote
+        # commands get simulated answers.
+        self.demo_mode = False
+        # The first window, so we can close it when the main one opens.
+        self.start_window = None
 
         self.show_start_window()
 
@@ -199,14 +267,24 @@ class OmniQuadApp:
         """The first window: ask for the drone IP and the password."""
         window = Gtk.Window(title="OmniQuadGUI - connect to drone")
         window.set_border_width(12)
-        window.set_default_size(430, 220)
+        window.set_default_size(430, 260)
         window.connect("destroy", Gtk.main_quit)
+        self.start_window = window
 
         # A vertical box: one row per input field.
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         window.add(vbox)
 
         vbox.add(Gtk.Label(label="Connect to the drone's onboard computer (SSH)"))
+
+        # -- user row --
+        hbox_user = Gtk.Box(spacing=8)
+        hbox_user.add(Gtk.Label(label="User:"))
+        self.user_entry = Gtk.Entry()
+        self.user_entry.set_text(self.config["user"])  # default: rock
+        self.user_entry.connect("activate", self.on_connect_clicked)
+        hbox_user.pack_start(self.user_entry, True, True, 0)
+        vbox.add(hbox_user)
 
         # -- IP row --
         hbox_ip = Gtk.Box(spacing=8)
@@ -240,6 +318,15 @@ class OmniQuadApp:
         self.status_label.set_xalign(0.0)  # left-aligned text
         vbox.add(self.status_label)
 
+        # Helpful hint: how to open the demo view without a drone.
+        vbox.add(Gtk.Label(
+            label="Tip: user '" + self.config["demo_user"] + "' with "
+                  "password '" + self.config["demo_password"] + "' opens "
+                  "a demo view without connecting (commands are simulated)."))
+        hint_label = vbox.get_children()[-1]
+        hint_label.set_line_wrap(True)
+        hint_label.set_xalign(0.0)
+
         window.show_all()
 
     # ------------------------------------------------------------------
@@ -254,7 +341,21 @@ class OmniQuadApp:
         """
         ip = self.ip_entry.get_text().strip()
         password = self.password_entry.get_text()
-        user = self.config["user"]
+        user = self.user_entry.get_text().strip()
+
+        # ---- Demo login: open the GUI WITHOUT connecting ----
+        # If the typed user and password match the demo credentials from
+        # config.json, we skip ssh completely.  Nothing is written to
+        # config.json (especially not a fake IP).
+        if (user == self.config["demo_user"]
+                and password == self.config["demo_password"]):
+            self.demo_mode = True
+            self.password = ""   # no real password exists in demo mode
+            self.open_main_window(ip if ip else "demo", user)
+            return
+
+        # ---- Normal login: a real ssh connection is required ----
+        self.demo_mode = False
 
         # Simple sanity checks before we even try ssh.
         if not ip:
@@ -359,13 +460,32 @@ class OmniQuadApp:
     # ------------------------------------------------------------------
     def open_main_window(self, ip, user):
         """Build the main window: large terminal left, buttons right."""
-        # Create a private temp folder that will hold the ssh "control
-        # socket".  In stage 2 the background commands reuse the logged-in
-        # connection through this socket (no second password needed).
-        self.ssh_tmp_dir = tempfile.mkdtemp(prefix="omniquad-")
-        self.control_socket = os.path.join(self.ssh_tmp_dir, "ssh-ctl")
+        # Close the start window now that the login is done.
+        # Its "destroy" signal was wired to Gtk.main_quit (quit the whole
+        # app), so remove that connection first -- otherwise closing this
+        # helper window would shut the program down.
+        if self.start_window is not None:
+            try:
+                self.start_window.disconnect_by_func(Gtk.main_quit)
+            except TypeError:
+                pass
+            self.start_window.destroy()
+            self.start_window = None
 
-        window = Gtk.Window(title="OmniQuadGUI - " + user + "@" + ip)
+        if self.demo_mode:
+            # Demo: no connection, so no ssh socket is needed at all.
+            self.ssh_tmp_dir = ""
+            self.control_socket = ""
+            title = "OmniQuadGUI - DEMO (not connected)"
+        else:
+            # Create a private temp folder that will hold the ssh "control
+            # socket".  The background commands reuse the logged-in
+            # connection through this socket (no second password needed).
+            self.ssh_tmp_dir = tempfile.mkdtemp(prefix="omniquad-")
+            self.control_socket = os.path.join(self.ssh_tmp_dir, "ssh-ctl")
+            title = "OmniQuadGUI - " + user + "@" + ip
+
+        window = Gtk.Window(title=title)
         window.set_default_size(1250, 750)
         window.connect("delete-event", self.on_main_window_closed)
 
@@ -434,6 +554,9 @@ class OmniQuadApp:
         # Confirm/Cancel row.  It must only appear after the user clicks
         # "Shutdown", so hide it again explicitly.
         self.shutdown_confirm_box.hide()
+        # Same for the loading spinner: hidden until a container check
+        # is actually running.
+        self.container_spinner.hide()
 
         # Put the left divider at 50/50 now that the real window size
         # is known (see split_left_half above).
@@ -452,8 +575,26 @@ class OmniQuadApp:
         # terminal just looks empty and typing seems to do nothing.
         terminal.connect("child-exited", self.on_ssh_child_exited)
 
-        # Now start the REAL interactive ssh session inside the terminal.
-        self.start_ssh_session(ip, user)
+        # Start the session inside the terminal: the REAL interactive
+        # ssh when connected, or only a demo banner in demo mode.
+        if self.demo_mode:
+            self.feed_demo_banner()
+        else:
+            self.start_ssh_session(ip, user)
+
+    def feed_demo_banner(self):
+        """In demo mode the terminal shows a banner instead of ssh.
+
+        There is no ssh child process, so the terminal is not
+        interactive here -- it only visualizes what would normally be
+        the drone's shell.
+        """
+        banner = (
+            "DEMO MODE - not connected to the drone.\n"
+            "The buttons on the right work; the drone answers are SIMULATED.\n"
+            "No ssh session is open, so this terminal is not interactive.\n"
+        )
+        self.terminal.feed(banner.encode())
 
     def on_ssh_child_exited(self, terminal, status, *args):
         """Called when the ssh process inside the terminal ends."""
@@ -579,8 +720,21 @@ class OmniQuadApp:
 
         # The buttons are built from commands.json, not hard-coded.
         for entry in self.commands.get("host_buttons", []):
-            button = Gtk.Button(label=entry["label"])
             action = entry.get("action", "")
+            label = entry["label"]
+            # "Start" gets a green dot, "Stop" a red dot, so you can tell
+            # them apart at a glance.  The container check gets a whale,
+            # and shutdown gets a skull, as quick visual reminders.
+            if action == "start_container":
+                button = make_dot_button("#2ecc71", label)
+            elif action == "stop_container":
+                button = make_dot_button("#e74c3c", label)
+            elif action == "docker_ps":
+                button = make_emoji_button("\N{SPOUTING WHALE}", label)
+            elif action == "shutdown":
+                button = make_emoji_button("\N{SKULL}", label)
+            else:
+                button = Gtk.Button(label=label)
             if action == "docker_ps":
                 button.connect("clicked", self.on_check_containers)
             elif action == "start_container":
@@ -590,6 +744,8 @@ class OmniQuadApp:
             elif action == "shutdown":
                 button.connect("clicked", self.on_shutdown_clicked)
                 self.shutdown_button = button
+                # Red background with white text (see load_button_styles).
+                button.get_style_context().add_class("warm-action")
             else:
                 # Unknown action: keep the button but make it do nothing
                 # except log a note (safer than crashing).
@@ -614,7 +770,15 @@ class OmniQuadApp:
         # explicitly right after showing the window.
 
         # -- container list (filled by "Check running containers") ------
-        panel.add(Gtk.Label(label="Containers running (last check):"))
+        # The label sits in a row together with a small loading spinner
+        # that appears only while the check is running.
+        check_row = Gtk.Box(spacing=6)
+        check_label = Gtk.Label(label="Containers running (last check):")
+        check_label.set_xalign(0.0)
+        self.container_spinner = Gtk.Spinner()
+        check_row.pack_start(check_label, True, True, 0)
+        check_row.pack_start(self.container_spinner, False, False, 0)
+        panel.add(check_row)
         list_scrolled = Gtk.ScrolledWindow()
         list_scrolled.set_policy(
             Gtk.PolicyType.NEVER,       # no horizontal scrollbar needed
@@ -655,6 +819,14 @@ class OmniQuadApp:
 
         Never pass a password as part of `ssh_command`.
         """
+        if self.demo_mode:
+            # Demo: no drone is contacted at all.  The answer is produced
+            # in the main thread with simulated output, so the whole GUI
+            # (log, container list, stop/shutdown sequences) can be tried
+            # out without any connection.
+            GLib.idle_add(self.demo_run, ssh_command, on_done)
+            return
+
         def worker():
             argv = [
                 "ssh",
@@ -691,6 +863,48 @@ class OmniQuadApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def demo_run(self, ssh_command, on_done):
+        """MAIN THREAD (demo only): answer a command with simulated output."""
+        success, returncode, output = self.demo_answer(ssh_command)
+        self.append_log("[demo] $ " + ssh_command + "\n" + output)
+        on_done(success, returncode, output)
+        return False   # for GLib.idle_add: run only once
+
+    def demo_answer(self, ssh_command):
+        """Simulate the drone in demo mode.
+
+        Keeps a tiny 'state' (is the container running?) so that start,
+        stop and shutdown sequences behave like on the real drone.
+        """
+        name = self.commands["container_name"]
+
+        # Which containers are running?
+        if 'docker ps --format "{{.Names}}|{{.Status}}"' in ssh_command:
+            if self.demo_container_running:
+                return True, 0, name + "|Up 2 minutes (simulated)\n"
+            return True, 0, ""
+        if 'docker ps --format "{{.Names}}"' in ssh_command:
+            if self.demo_container_running:
+                return True, 0, name + "\n"
+            return True, 0, ""
+
+        # Start container: it becomes "running" in the simulated state.
+        if ssh_command.startswith("./nuc_helper.sh run"):
+            self.demo_container_running = True
+            return True, 0, "Demo: container '" + name + "' started.\n"
+
+        # Stop container: it becomes "not running" (or errors if it
+        # was not running -- just like nuc_helper.sh does for real).
+        if ssh_command.startswith("./nuc_helper.sh stoprm"):
+            if self.demo_container_running:
+                self.demo_container_running = False
+                return True, 0, ("Demo: container '" + name
+                                 + "' stopped and removed.\n")
+            return False, 1, "Error: container is not running (demo).\n"
+
+        # Anything else gets a neutral simulated answer.
+        return True, 0, "(demo mode: simulated output for this command)\n"
+
     def set_drone_buttons_enabled(self, enabled):
         """Enable/disable all buttons that talk to the drone."""
         for button in self.drone_buttons:
@@ -701,12 +915,19 @@ class OmniQuadApp:
     # ------------------------------------------------------------------
     def on_check_containers(self, button):
         self.set_drone_buttons_enabled(False)
+        # Show the small loading spinner next to the list label while
+        # the check runs.
+        self.container_spinner.show()
+        self.container_spinner.start()
         self.run_ssh_background(
             'docker ps --format "{{.Names}}|{{.Status}}"',
             self.on_containers_result)
 
     def on_containers_result(self, success, returncode, output):
         """Show the docker ps result as a list in the window."""
+        # The check is done: stop and hide the loading spinner.
+        self.container_spinner.stop()
+        self.container_spinner.hide()
         self.set_drone_buttons_enabled(True)
         self.clear_container_list()
 
@@ -774,6 +995,9 @@ class OmniQuadApp:
             self.append_log(
                 "Start command FAILED (exit code "
                 + str(returncode) + "). See the log above for details.")
+        # Immediately check the containers again, so the list in the
+        # window shows whether the Fast-LIO container is really up.
+        self.on_check_containers(None)
 
     # ------------------------------------------------------------------
     # Button: Stop Fast-LIO container (SAFE multi-step sequence)
@@ -937,6 +1161,15 @@ class OmniQuadApp:
         ssh with input=self.password.  The password is nowhere in the
         command text, the log or any file.
         """
+        if self.demo_mode:
+            # Demo: there is no drone to shut down, but show exactly
+            # what the GUI would look like afterwards.
+            self.append_log(
+                "Demo: shutdown simulated. Nothing happened "
+                "(no drone is connected).")
+            GLib.idle_add(self.on_shutdown_sent)
+            return
+
         def worker():
             argv = [
                 "ssh",
@@ -1002,18 +1235,20 @@ class OmniQuadApp:
         We ask the ssh master connection to exit (`ssh -O exit`), then
         remove the private temp folder with the control socket.
         """
-        try:
-            subprocess.run(
-                ["ssh", "-O", "exit",
-                 "-o", "ControlPath=" + self.control_socket,
-                 self.config["user"] + "@" + self.config["ip"]],
-                capture_output=True,
-                timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass  # ssh is already gone or stubborn -- not a problem
+        if self.control_socket:
+            # Normal (connected) mode: politely close the master ssh.
+            try:
+                subprocess.run(
+                    ["ssh", "-O", "exit",
+                     "-o", "ControlPath=" + self.control_socket,
+                     self.config["user"] + "@" + self.config["ip"]],
+                    capture_output=True,
+                    timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # ssh is already gone or stubborn -- not a problem
 
-        shutil.rmtree(self.ssh_tmp_dir, ignore_errors=True)
+            shutil.rmtree(self.ssh_tmp_dir, ignore_errors=True)
         Gtk.main_quit()
         return False  # allow the window to close
 

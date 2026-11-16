@@ -37,12 +37,24 @@ cd OmniQuadGUI
 python3 main.py
 ```
 
-- **Start window:** type the drone's IP (e.g. `192.168.1.50`) and the
-  password, then click **Connect**.
+- **Start window:** type the drone's IP (e.g. `192.168.1.50`), the user
+  (default `rock`) and the password, then click **Connect**.
 - If the connection fails you get a plain-English message, for example
   *"wrong password"* or *"could not reach the drone — check it is powered
   on and both machines are on the same network"*.
 - On success the main window opens with the drone's terminal embedded.
+
+### Demo view (no drone needed)
+Log in with the **demo credentials** (default: user `demo`, password
+`demo`, both changeable in `config.json`). The GUI opens normally —
+title shows **DEMO (not connected)** — but:
+
+- no SSH session is opened and no drone is contacted anywhere;
+- the terminal only shows a demo banner (it is not interactive);
+- all buttons work against **simulated drone answers**: the container
+  list shows a fake container, Start/Stop/shutdown run their full
+  sequences with a small pretend state, and the log area fills as
+  usual. Perfect for trying the GUI before the drone is on your desk.
 
 The last successfully used IP is remembered in `config.json`.
 **The password is never saved anywhere** — you type it on every start.
@@ -62,7 +74,9 @@ The last successfully used IP is remembered in `config.json`.
 {
     "user": "rock",
     "ip": "",
-    "dry_run": true
+    "dry_run": true,
+    "demo_user": "demo",
+    "demo_password": "demo"
 }
 ```
 
@@ -70,6 +84,9 @@ The last successfully used IP is remembered in `config.json`.
 - `ip` — remembered automatically after a successful connect.
 - `dry_run` — leave `true` for now: the shutdown button (stage 2) will
   *print what it would run* instead of actually shutting the drone down.
+- `demo_user` / `demo_password` — login that opens the GUI in demo mode
+  (no drone connection, simulated answers). Not a security feature —
+  just a preview mode.
 
 ## 4. How the SSH connection works (why there is only one password prompt)1. When you click **Connect**, the app first runs a quick non-interactive
    check: `sshpass -e ssh rock@<ip> echo ok`.
