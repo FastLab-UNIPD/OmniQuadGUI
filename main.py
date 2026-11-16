@@ -47,7 +47,7 @@ import time
 import gi
 gi.require_version("Gtk", "3.0")      # make sure we get GTK 3, not GTK 4
 gi.require_version("Vte", "2.91")     # the VTE version Ubuntu ships for GTK 3
-from gi.repository import Gtk, GLib, Vte, Pango, Gdk
+from gi.repository import Gtk, GLib, Vte, Pango, Gdk, GdkPixbuf
 
 
 # ----------------------------------------------------------------------------
@@ -59,6 +59,7 @@ from gi.repository import Gtk, GLib, Vte, Pango, Gdk
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 COMMANDS_FILE = os.path.join(APP_DIR, "commands.json")
+LOGO_FILE = os.path.join(APP_DIR, "omniquadgui.png")   # app logo
 
 # How long (seconds) the quick connection check may take before we give
 # up and report "cannot reach the drone".
@@ -223,6 +224,13 @@ class OmniQuadApp:
         # Button colours and styles (dot buttons, warm shutdown button).
         load_button_styles()
 
+        # Use the logo as the window icon (taskbar / title bar) for ALL
+        # windows this app opens.
+        try:
+            Gtk.Window.set_default_icon_from_file(LOGO_FILE)
+        except Exception:
+            pass   # logo missing: windows just keep the default icon
+
         # ---- shared state ----
         self.config = load_config()          # user / ip / dry_run
         self.commands = load_config_commands()
@@ -271,9 +279,24 @@ class OmniQuadApp:
         window.connect("destroy", Gtk.main_quit)
         self.start_window = window
 
+        # ---- Background: the app logo, faded, behind the login form ---
+        # Gtk.Overlay stacks widgets: the FIRST child added (the logo)
+        # is drawn at the bottom, later overlay children (the form) are
+        # drawn on top of it.
+        overlay = Gtk.Overlay()
+        window.add(overlay)
+
+        logo_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+            LOGO_FILE, 240, 240, True)   # True = keep the aspect ratio
+        logo_image = Gtk.Image.new_from_pixbuf(logo_pixbuf)
+        logo_image.set_opacity(0.2)      # very light: background only
+        logo_image.set_halign(Gtk.Align.CENTER)
+        logo_image.set_valign(Gtk.Align.CENTER)
+        overlay.add(logo_image)          # bottom layer
+
         # A vertical box: one row per input field.
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        window.add(vbox)
+        overlay.add_overlay(vbox)        # drawn on top of the logo
 
         vbox.add(Gtk.Label(label="Connect to the drone's onboard computer (SSH)"))
 

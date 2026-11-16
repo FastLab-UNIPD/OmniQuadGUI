@@ -61,12 +61,14 @@ The last successfully used IP is remembered in `config.json`.
 
 ## 3. Files in this folder
 
-| File            | Purpose                                                        |
-|-----------------|----------------------------------------------------------------|
-| `main.py`       | The whole app (start window, connection, terminal).            |
-| `config.json`   | Settings: user name, last-used IP, `dry_run` flag. Editable.   |
-| `commands.json` | The button definitions (labels + commands). Data only.         |
-| `README.md`     | This file.                                                     |
+| File              | Purpose                                                        |
+|-------------------|----------------------------------------------------------------|
+| `main.py`         | The whole app (start window, connection, terminal, buttons).   |
+| `config.json`     | Settings: user name, last-used IP, `dry_run` flag. Editable.   |
+| `commands.json`   | The button definitions (labels + commands). Data only.         |
+| `omniquadgui.png` | The app logo (login background, window + shortcut icon).       |
+| `omniquadgui.svg` | The same logo as vector graphic (source of the PNG).           |
+| `README.md`       | This file.                                                     |
 
 `config.json` looks like this:
 
