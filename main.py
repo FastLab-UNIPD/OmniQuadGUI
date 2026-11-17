@@ -1707,9 +1707,9 @@ class OmniQuadApp:
         VTE changed its API over the Ubuntu versions: Ubuntu 24.04
         (VTE 0.76+) has `get_text_format`, while Ubuntu 22.04 (VTE 0.68)
         only has the older `get_text` / `get_text_range`.  Calling a
-        method that does not exist crashed the polling function (the
-        topics were then never fetched into the list), so we try each
-        variant and only give up when none of them works.
+        method that does not exist crashed the polling function.  The
+        older methods also differ in whether they include scrollback, so
+        the range fallback explicitly reads the whole terminal buffer.
         """
         terminal = self.terminal
         # 1) Newer VTE (Ubuntu 24.04 and newer).
@@ -1735,13 +1735,17 @@ class OmniQuadApp:
             pass
         except Exception:
             pass
-        # 3) Last resort: read exactly the visible screen area.
+        # 3) Last resort: read the complete buffer.  get_text_range uses
+        # (start_column, start_row, end_column, end_row), not row/column
+        # order.  Include scrollback because a long topic list can push
+        # the marker below the visible screen on older VTE versions.
         try:
-            start_row = int(terminal.get_vadjustment().get_value())
-            rows = terminal.get_row_count()
-            cols = terminal.get_column_count()
+            columns = max(1, int(terminal.get_column_count()))
+            rows = max(1, int(terminal.get_row_count()))
+            scrollback = max(
+                0, int(terminal.get_scrollback_lines()))
             result = terminal.get_text_range(
-                start_row, 0, start_row + rows - 1, cols, None, None)
+                0, 0, columns - 1, rows + scrollback - 1, None, None)
             return result[0] if isinstance(result, tuple) else result
         except Exception:
             return ""

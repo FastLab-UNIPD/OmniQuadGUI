@@ -21,12 +21,10 @@ no user name, no absolute path anywhere). launch.sh cds to its own
 folder, installs omniquadgui.png once into
 ~/.local/share/icons/hicolor/256x256/apps (so Icon=omniquadgui works
 without admin rights), then execs python3 main.py. Use by double-click
-in Files (Allow Launching once). NOTE: desktop-file-validate warns about
-the Exec quoting, but real launchers (Files/GNOME, via GDesktopAppInfo)
-parse it correctly -- verified. `gio launch` from a terminal leaves %k
-EMPTY (stdin case) and would fail -- not the real usage path. The old
-absolute shortcut /home/pil8/Desktop/OmniQuadGUI.desktop still works on
-this PC only.
+in Files (Allow Launching once). The desktop entry uses a
+desktop-file-validate-compliant, shell-free path handoff to launch.sh.
+`gio launch` from a terminal leaves %k EMPTY (stdin case) and would fail;
+use Files/GNOME or run `./launch.sh` from a terminal instead.
 
 FILES
 -----
@@ -181,13 +179,9 @@ IMPORTANT TECHNICAL LESSONS (do not regress)
 - Portable .desktop lesson: %k expands to the desktop file's own path
   ONLY when launched by a real launcher (GDesktopAppInfo from filename,
   like Files/desktop do). `gio launch` feeds the file via stdin and
-  leaves %k EMPTY. GLib's keyfile parser DROPS Exec if it contains
-  backslash escapes it does not know (e.g. \$) even though
-  desktop-file-validate accepts them -- always test a candidate Exec
-  with Gio.DesktopAppInfo.new_from_filename(...).launch() before
-  committing. Single-quote pattern
-  Exec=bash -c 'cd "$(dirname "%k")" && exec ./launch.sh' is the one
-  that works; validator warnings about it are cosmetic.
+  leaves %k EMPTY. The Exec field must still pass
+  desktop-file-validate; shell quoting that happens to work in GNOME can
+  be rejected by other launchers.
 - VTE spawn_async on this Ubuntu:
   (pty_flags, working_dir, argv, envv, GLib.SpawnFlags.SEARCH_PATH,
    child_setup, child_setup_data, timeout, cancellable, callback)

@@ -59,6 +59,8 @@ path, so the whole folder (including `launch.sh` and the launcher) can
 be copied to any PC, for any user, to any location. On the first start
 `launch.sh` copies the app icon into the user's private icon folder, so
 the icon shows up in the file manager and the taskbar from then on.
+From a terminal, use `./launch.sh` (or `python3 main.py`) from this
+directory; `launch.sh` resolves the application path itself.
 
 The app also cleans ROS 2 leftovers (from a sourced `setup.bash`) out of
 its own environment at startup, so it behaves the same whether it is

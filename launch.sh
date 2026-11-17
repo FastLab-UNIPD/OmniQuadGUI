@@ -26,5 +26,6 @@ if [ -f omniquadgui.png ] && [ ! -f "$ICON_TARGET" ]; then
     fi
 fi
 
-# Start the app (main.py finds config.json etc. through its own path).
-exec python3 main.py
+# Start the app by absolute path so this remains correct even if a caller
+# changes directory between launching this script and starting Python.
+exec python3 "$APP_DIR/main.py"
