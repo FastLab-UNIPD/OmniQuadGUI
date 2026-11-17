@@ -12,9 +12,21 @@ topics. It does NOT control flight. User is a mechanical engineering
 student with basic Python: code must stay simple, readable, heavily
 commented, no advanced patterns. Plain-English error messages.
 
-Folder: /home/pil8/Desktop/OmniQuad_Stuff/OmniQuadGUI
-Desktop shortcut: /home/pil8/Desktop/OmniQuadGUI.desktop
-(allow-launching granted; Icon= absolute path to omniquadgui.png)
+Folder: /home/pil8/Desktop/OmniQuad_Stuff/OmniQuadGUI (portable: copyable
+to any PC / user / location).
+
+Launcher: OmniQuadGUI.desktop INSIDE the project folder, now PORTABLE
+(%k = the desktop file's own location -> runs launch.sh next to it;
+no user name, no absolute path anywhere). launch.sh cds to its own
+folder, installs omniquadgui.png once into
+~/.local/share/icons/hicolor/256x256/apps (so Icon=omniquadgui works
+without admin rights), then execs python3 main.py. Use by double-click
+in Files (Allow Launching once). NOTE: desktop-file-validate warns about
+the Exec quoting, but real launchers (Files/GNOME, via GDesktopAppInfo)
+parse it correctly -- verified. `gio launch` from a terminal leaves %k
+EMPTY (stdin case) and would fail -- not the real usage path. The old
+absolute shortcut /home/pil8/Desktop/OmniQuadGUI.desktop still works on
+this PC only.
 
 FILES
 -----
@@ -23,6 +35,8 @@ FILES
                  demo_user:"demo", demo_password:"demo"
 - commands.json  button definitions as data (container_name:
                  px4_fastlio_bridge, host_buttons, terminal_buttons)
+- launch.sh      portable launcher script (see above)
+- OmniQuadGUI.desktop   portable launcher icon inside the folder
 - omniquadgui.png / omniquadgui.svg   logo
 - README.md      install/run/explanation for all 3 stages
 - PROGRESS.txt   this file
@@ -30,7 +44,43 @@ FILES
 
 DEPENDENCIES
 ------------
-python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, sshpass
+python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, sshpass (plus
+openssh-client, auto-installed). Full table with explanations is now in
+README section 1 (nothing needs pip; app is stdlib + GTK/VTE only).
+
+BUGFIX PASS (Nov 2026, after user reports)
+------------------------------------------
+1) FROZEN GUI when started from a terminal (window appeared but nothing
+   was clickable; desktop icon was fine): the user shell sources ROS
+   Jazzy, which sets a long LD_LIBRARY_PATH full of /opt/ros/...
+   vendor libraries. Removing ROS_* vars + PYTHONPATH was NOT enough --
+   LD_LIBRARY_PATH made GTK/VTE load incompatible library copies.
+   FIX: main.py now RESTARTS ITSELF with os.execve in a whitelisted
+   clean environment (ENV_VARS_TO_KEEP: DISPLAY, XAUTHORITY,
+   WAYLAND_DISPLAY, XDG_*, DBUS_SESSION_BUS_ADDRESS, HOME, USER,
+   LANG/LC_*, TERM...; PATH kept but /opt/ros|conda|envs|venv entries
+   removed). Marker env var OMNIQUAD_CLEAN_ENV=1 prevents an infinite
+   restart loop; clean_own_environment() stays as fallback if execve
+   fails. The app now behaves like a desktop-icon start from EVERY
+   launcher (launch.sh included).
+2) Ubuntu 22.04: topic list stayed EMPTY (spinner forever). Cause:
+   Vte.Terminal.get_text_format() only exists since VTE 0.76 (Ubuntu
+   24.04 has it; 22.04 ships 0.68 and does NOT). The poll callback
+   raised AttributeError every 0.5 s and silently died. FIX:
+   _read_terminal_screen() now tries get_text_format -> get_text() ->
+   get_text(None, None) -> get_text_range(visible screen). On old VTE
+   get_text() returns the WHOLE scrollback, so topics scrolled off
+   screen are captured too.
+3) Hardening: the topic marker is now typed as  echo "MARKER"  (quoted)
+   so a wrapped fragment of the echoed command line can never exactly
+   equal the printed marker line (narrow windows wrap the typed
+   command over several rows; the poll matches whole stripped lines).
+4) NOTE: the copy of the old absolute-path Desktop shortcut the user
+   pasted into the project folder had OVERWRITTEN the portable
+   OmniQuadGUI.desktop. Restored to the portable version
+   (Exec=bash -c 'cd "$(dirname "%k")" && exec ./launch.sh',
+   Icon=omniquadgui); verified it parses via Gio.DesktopAppInfo
+   (new_from_filename -- do NOT run gio launch, %k stays empty).
 
 STATUS: ALL THREE STAGES COMPLETE AND TESTED
 --------------------------------------------
@@ -73,14 +123,20 @@ Stage 3 (all 22 headless checks pass):
   closing a window stops that echo (echo_windows list, destroy hook).
   Demo mode shows a note instead of spawning. hz commands still type
   into the main terminal. build_spawn_envv() extracted and shared.
-- "List available topics": types "ros2 topic list" INTO the terminal
-  (ros2 only exists inside the container shell), waits 3 s, then reads
-  the printed topics from the terminal screen
-  (get_text_format(Vte.Format.TEXT), lines starting with "/", deduped)
-  and fills the clickable SINGLE-selection Gtk.ListBox with its own
-  spinner; clicking a row sets selected_topic. The old background
-  "docker exec ... ros2 topic list" variant failed on the real drone
-  (non-interactive shell has no ROS env) - do not bring it back.
+- "List available topics": types "ros2 topic list; echo
+  OMNIQUAD_TOPICS_DONE_<n>" INTO the terminal (ros2 only exists inside
+  the container shell; <n> increments per click so an OLD marker on
+  screen can never be mistaken for the new answer), then POLLS the
+  terminal screen every 0.5 s (wait_for_topics, up to 60 checks = 30 s)
+  until the marker appears, then reads the printed topics
+  (lines starting with "/", deduped) and fills the clickable
+  SINGLE-selection Gtk.ListBox with its own spinner; clicking a row sets
+  selected_topic. The OLD fixed 3-second wait was the reason topics were
+  not fetched on slower PCs -- never bring a fixed wait back. The old
+  background "docker exec ... ros2 topic list" variant failed on the
+  real drone (non-interactive shell has no ROS env) - do not bring it
+  back. 8 headless logic checks pass (test script was in /tmp; marker,
+  dedupe, timeout, per-click marker numbering).
 - "Echo selected topic": opens an echo window for
   "ros2 topic echo <selection>" (see echo windows below).
 - Fixed buttons type their commands.json command (odometry echo,
@@ -113,6 +169,25 @@ EXTRAS (all user-requested, all tested)
 
 IMPORTANT TECHNICAL LESSONS (do not regress)
 --------------------------------------------
+- clean_own_environment() runs BEFORE the gi import: it removes ROS_*
+  vars + AMENT_PREFIX_PATH and strips /opt/ros/* PYTHONPATH entries from
+  the APP's own environment. With ROS Jazzy sourced in the user's shell
+  the app was unreliable -- it only started properly from the desktop
+  icon (clean env). Now the app behaves the same from every launcher.
+  UPDATE (bugfix pass): the surgical cleanup was NOT enough (frozen GUI
+  from a terminal -- see BUGFIX PASS item 1). The app now re-execs
+  itself into a whitelisted clean env first; clean_own_environment()
+  is only the fallback.
+- Portable .desktop lesson: %k expands to the desktop file's own path
+  ONLY when launched by a real launcher (GDesktopAppInfo from filename,
+  like Files/desktop do). `gio launch` feeds the file via stdin and
+  leaves %k EMPTY. GLib's keyfile parser DROPS Exec if it contains
+  backslash escapes it does not know (e.g. \$) even though
+  desktop-file-validate accepts them -- always test a candidate Exec
+  with Gio.DesktopAppInfo.new_from_filename(...).launch() before
+  committing. Single-quote pattern
+  Exec=bash -c 'cd "$(dirname "%k")" && exec ./launch.sh' is the one
+  that works; validator warnings about it are cosmetic.
 - VTE spawn_async on this Ubuntu:
   (pty_flags, working_dir, argv, envv, GLib.SpawnFlags.SEARCH_PATH,
    child_setup, child_setup_data, timeout, cancellable, callback)

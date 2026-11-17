@@ -17,15 +17,30 @@ terminal and run:
 
 ```bash
 sudo apt update
-sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 sshpass
+sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 sshpass \
+    openssh-client
 ```
 
-| Package            | What it is for                                            |
-|--------------------|-----------------------------------------------------------|
-| `python3-gi`       | Lets Python use GTK (the graphical toolkit)               |
-| `gir1.2-gtk-3.0`   | GTK 3 itself                                              |
-| `gir1.2-vte-2.91`  | The embedded terminal widget (like GNOME Terminal's core) |
-| `sshpass`          | Feeds the SSH password without showing it on screen       |
+| Package              | What it is for                                            |
+|----------------------|-----------------------------------------------------------|
+| `python3`            | Python 3 itself (installed automatically with `python3-gi`) |
+| `python3-gi`         | Lets Python use GTK (the graphical toolkit)               |
+| `gir1.2-gtk-3.0`     | GTK 3 itself                                              |
+| `gir1.2-vte-2.91`    | The embedded terminal widget (like GNOME Terminal's core) |
+| `gir1.2-pango-1.0`   | Text rendering (coloured dots, fonts) — installed automatically together with `gir1.2-gtk-3.0` |
+| `gir1.2-gdk-pixbuf-2.0` | Loading the logo image — installed automatically together with `gir1.2-gtk-3.0` |
+| `sshpass`            | Feeds the SSH password without showing it on screen       |
+| `openssh-client`     | The `ssh` program itself (used for every connection; installed automatically on Ubuntu, listed here so nothing is missing) |
+
+The app itself uses **only the Python standard library** (json, os,
+subprocess, threading, …) plus the GTK/VTE libraries above — there is
+**nothing to install with `pip`**, and the whole GUI is one Python file.
+
+Ubuntu's package manager installs `gir1.2-pango-1.0`,
+`gir1.2-gdk-pixbuf-2.0` and `openssh-client` automatically as
+dependencies of the packages above, so the short `apt install` line is
+enough — the table simply shows the complete list of libraries the app
+touches.
 
 On the drone side, SSH must be enabled and the user (default `rock`) must be
 allowed to log in with a password.
@@ -36,6 +51,19 @@ allowed to log in with a password.
 cd OmniQuadGUI
 python3 main.py
 ```
+
+or double-click **`OmniQuadGUI.desktop`** inside the folder in the file
+manager (right-click it once and choose **Allow Launching** first).
+The launcher is portable: it contains no user name and no absolute
+path, so the whole folder (including `launch.sh` and the launcher) can
+be copied to any PC, for any user, to any location. On the first start
+`launch.sh` copies the app icon into the user's private icon folder, so
+the icon shows up in the file manager and the taskbar from then on.
+
+The app also cleans ROS 2 leftovers (from a sourced `setup.bash`) out of
+its own environment at startup, so it behaves the same whether it is
+started from the launcher, from `launch.sh`, or from a terminal that has
+ROS sourced.
 
 - **Start window:** type the drone's IP (e.g. `192.168.1.50`), the user
   (default `rock`) and the password, then click **Connect**.
@@ -67,6 +95,9 @@ The last successfully used IP is remembered in `config.json`.
 | `config.json`     | Settings: user name, last-used IP, `dry_run` flag. Editable.   |
 | `commands.json`   | The button definitions (labels + commands). Data only.         |
 | `omniquadgui.png` | The app logo (login background, window + shortcut icon).       |
+| `launch.sh`       | Portable launcher script used by `OmniQuadGUI.desktop`; finds its own folder, installs the icon once, then starts the app. |
+| `OmniQuadGUI.desktop` | The double-clickable launcher icon inside the folder (portable: no user name or absolute path). |
+| `PROGRESS.txt`    | Handoff/progress notes for continuing development on the app. |
 | `omniquadgui.svg` | The same logo as vector graphic (source of the PNG).           |
 | `README.md`       | This file.                                                     |
 
@@ -90,7 +121,9 @@ The last successfully used IP is remembered in `config.json`.
   (no drone connection, simulated answers). Not a security feature —
   just a preview mode.
 
-## 4. How the SSH connection works (why there is only one password prompt)1. When you click **Connect**, the app first runs a quick non-interactive
+## 4. How the SSH connection works (why there is only one password prompt)
+
+1. When you click **Connect**, the app first runs a quick non-interactive
    check: `sshpass -e ssh rock@<ip> echo ok`.
    - `sshpass -e` reads the password from the `SSHPASS` environment
      variable, so the password is **never on a command line** and is
@@ -212,11 +245,25 @@ window's terminal instead.
 
 ### List available topics
 Types `ros2 topic list` **into the terminal** — the same place where you
-are inside the container and `ros2` is available — waits a few seconds
-(the first call starts the ROS daemon and can be slow), then reads the
-topics that were printed and shows them in the list below; **click one**
-to select it. If nothing is found (e.g. the nodes are still starting),
-the log tells you and you can simply click the button again.
+are inside the container and `ros2` is available — and then **waits until
+the command has really finished** (the app types a small marker line
+after the command and polls the terminal screen until the marker
+appears, for up to 30 seconds). Because it waits for the *actual answer*
+instead of a fixed number of seconds, this works the same on fast and
+slow PCs and networks — the first call still starts the ROS daemon and
+can be slow. When the topics are printed they appear in the list below;
+**click one** to select it. If nothing is found (e.g. the nodes are
+still starting), the log tells you and you can simply click the button
+again.
+
+This works on both tested Ubuntu versions: on Ubuntu 24.04 the app
+reads the terminal with the modern VTE function, on Ubuntu 22.04 it
+automatically falls back to the older one that version ships — before
+this fix, the topic list stayed empty on Ubuntu 22. If **fewer topics
+appear in the terminal itself** than expected, that is not a GUI
+problem: the command runs on the drone, so a short list usually means
+the ROS nodes were still starting — wait a moment and click the button
+again.
 
 ### Echo selected topic
 Types `ros2 topic echo <the topic you clicked>` into the terminal.
