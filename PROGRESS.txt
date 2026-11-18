@@ -80,6 +80,21 @@ BUGFIX PASS (Nov 2026, after user reports)
    Icon=omniquadgui); verified it parses via Gio.DesktopAppInfo
    (new_from_filename -- do NOT run gio launch, %k stays empty).
 
+STARTUP WINDOW SIZE FIX (Nov 2026)
+----------------------------------
+Windows had to be resized by hand before all buttons were visible.
+- Main window: the right button sidebar (ScrolledWindow in the
+  horizontal Paned) could shrink to ~170 px, hiding most buttons. Now:
+  sidebar policy NEVER horizontal (so it asks for the full button
+  width), pack2(sidebar, resize=False, shrink=False), natural width AND
+  height propagated, window size from fit_window_to_content() (content
+  size, min 1200x720, clamped to the monitor work area), and the divider
+  set so the sidebar gets exactly its natural width.
+- Start window: Gtk.Overlay only measures its MAIN child (the logo), so
+  the form on top was clipped. A Gtk.SizeGroup (BOTH) links logo and
+  form so the window always fits the form, also with long errors.
+  Do not remove that SizeGroup.
+
 STATUS: ALL THREE STAGES COMPLETE AND TESTED
 --------------------------------------------
 Stage 1 (tested on real drone):

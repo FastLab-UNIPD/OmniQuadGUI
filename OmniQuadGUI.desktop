@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=OmniQuadGUI
-Comment=Connect to the drone computer over SSH and manage containers / ROS topics
-Exec=python3 -c "import os,sys; p=os.path.join(os.path.dirname(sys.argv[1]),'launch.sh'); os.execv(p,[p])" %k
-Icon=omniquadgui
-Terminal=false
-Categories=Development;

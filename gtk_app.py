@@ -55,6 +55,36 @@ def build_ssh_argv(user, ip, extra_options=(), remote_command=None):
     return argv
 
 
+def fit_window_to_content(window, min_width, min_height):
+    """Give `window` a starting size that shows ALL of its contents.
+
+    GTK can tell how much room the widgets inside the window would like
+    ("natural size").  We open the window at least that big (and at least
+    min_width x min_height), but never larger than the usable part of
+    the screen (the "work area": the screen minus top bar / dock).
+    Call this after all widgets were added, before window.show_all().
+    """
+    minimum, natural = window.get_preferred_size()
+    width = max(min_width, natural.width)
+    height = max(min_height, natural.height)
+
+    display = Gdk.Display.get_default()
+    monitor = None
+    if display is not None:
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+    if monitor is not None:
+        workarea = monitor.get_workarea()
+        # Leave a small margin for the window's own title bar.
+        width = min(width, workarea.width)
+        height = min(height, workarea.height - 40)
+
+    # Never go below what the widgets absolutely need.
+    width = max(width, minimum.width)
+    height = max(height, minimum.height)
+    window.set_default_size(width, height)
+    return width, height
+
+
 def make_dot_button(dot_color, text):
     """A button whose label starts with a coloured dot (●).
 
@@ -292,6 +322,16 @@ class OmniQuadApp:
         self.demo_button.connect("clicked", lambda button: self.open_demo())
         vbox.add(self.demo_button)
 
+        # A Gtk.Overlay only asks for the size of its BOTTOM child (the
+        # logo), never for the form drawn on top of it.  Without help the
+        # window is too small and the lower part of the form is cut off.
+        # A SizeGroup makes the logo ask for at least the form's size, so
+        # the window always fits the whole form (also when a long error
+        # message makes the status label taller).
+        self.start_size_group = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.BOTH)
+        self.start_size_group.add_widget(logo_image)
+        self.start_size_group.add_widget(vbox)
+
         window.show_all()
 
     def open_demo(self):
@@ -469,9 +509,8 @@ class OmniQuadApp:
             title = "OmniQuadGUI - " + user + "@" + ip
 
         window = Gtk.Window(title=title)
-        # Wide enough for terminal + log on the left and the two button
-        # columns on the right.
-        window.set_default_size(1200, 720)
+        # The starting size is chosen later (fit_window_to_content), once
+        # all the buttons exist and GTK knows how much room they need.
         window.connect("delete-event", self.on_main_window_closed)
 
         # A Paned widget splits the window into two resizable parts.
@@ -558,10 +597,25 @@ class OmniQuadApp:
         # -- RIGHT: host buttons, container list (stage 3 adds more) -----
         self.controls = self.build_right_panel()
         sidebar = Gtk.ScrolledWindow()
-        sidebar.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        # NEVER scroll sideways: the sidebar then always asks for the full
+        # width of the button columns, so no button is hidden at startup.
+        # (Vertical scrolling stays possible for very small screens.)
+        sidebar.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         sidebar.add(self.controls)
-        pane.pack2(sidebar, False, True)
+        # resize=False, shrink=False: extra window width goes to the
+        # terminal, and the divider can never squeeze the buttons away.
+        pane.pack2(sidebar, False, False)
         sidebar.set_propagate_natural_width(True)
+        sidebar.set_propagate_natural_height(True)
+
+        # Open the window big enough for ALL the buttons, but never
+        # bigger than the screen (see fit_window_to_content).
+        window_width, window_height = fit_window_to_content(window, 1200, 720)
+        # Put the left/right divider so the button panel gets exactly the
+        # width it needs and the terminal gets all the rest.
+        sidebar_width = sidebar.get_preferred_width()[1]
+        handle_width = pane.style_get_property("handle-size")
+        pane.set_position(window_width - sidebar_width - handle_width)
 
         self.main_window = window
         window.show_all()
