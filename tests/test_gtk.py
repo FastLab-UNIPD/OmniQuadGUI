@@ -78,13 +78,59 @@ class GtkDemoTests(unittest.TestCase):
         app.bridge_status.refresh_button.clicked()
         until(lambda: app.container_running is False)
 
+    def test_local_bridge_card_works_without_the_drone(self):
+        from gtk_app import GLib, OmniQuadApp
+        from local_bridge import LocalBridge
+        bridge = LocalBridge("fake_bridge", "sleep 30")
+        bridge.ros_setup = ""
+        self.addCleanup(bridge.stop, True)
+        app = OmniQuadApp(demo=True, local_bridge=bridge)
+        self.addCleanup(self.close_app, app)
+        context = GLib.MainContext.default()
+
+        def until(predicate):
+            deadline = time.monotonic() + 8
+            while not predicate() and time.monotonic() < deadline:
+                context.iteration(False)
+                time.sleep(0.002)
+            self.assertTrue(predicate())
+
+        self.assertEqual(app.local_toggle.get_visible_child_name(), "start")
+        # Even with every DRONE control switched off, the local card works.
+        app.set_drone_buttons_enabled(False)
+        self.assertFalse(app.controls.get_sensitive())
+        self.assertTrue(app.start_local_button.is_sensitive())
+        app.start_local_button.clicked()
+        until(lambda: bridge.is_running())
+        self.assertEqual(app.local_toggle.get_visible_child_name(), "stop")
+        app.stop_local_button.clicked()
+        until(lambda: not bridge.is_running()
+              and app.local_toggle.get_visible_child_name() == "start")
+        self.assertIn("[foxglove] fake_bridge stopped.", app.log_buffer.get_text(
+            *app.log_buffer.get_bounds(), False))
+
+    def test_a_bridge_started_before_the_window_shows_stop(self):
+        # The real startup order: main() starts the bridge, THEN the
+        # window is built.  The card must offer "Stop" right away.
+        from gtk_app import OmniQuadApp
+        from local_bridge import LocalBridge
+        bridge = LocalBridge("fake_bridge", "sleep 30")
+        bridge.ros_setup = ""
+        self.addCleanup(bridge.stop, True)
+        bridge.start()
+        app = OmniQuadApp(demo=True, local_bridge=bridge)
+        self.addCleanup(self.close_app, app)
+        self.assertEqual(app.local_toggle.get_visible_child_name(), "stop")
+        self.assertIn("[foxglove] $ sleep 30", app.log_buffer.get_text(
+            *app.log_buffer.get_bounds(), False))
+
     def test_reconnect_opens_a_fresh_login(self):
         import gtk_app
         sessions = []
         real_app = gtk_app.OmniQuadApp
 
-        def create(demo):
-            app = real_app(demo=demo)
+        def create(demo, **kwargs):
+            app = real_app(demo=demo, **kwargs)
             sessions.append(app)
             def interact():
                 if demo:
@@ -96,8 +142,11 @@ class GtkDemoTests(unittest.TestCase):
             gtk_app.GLib.idle_add(interact)
             return app
 
-        with patch("gtk_app.OmniQuadApp", side_effect=create):
+        # Never launch the real Foxglove bridge from a test.
+        with patch("gtk_app.OmniQuadApp", side_effect=create), \
+                patch("gtk_app.LocalBridge.start") as start_bridge:
             gtk_app.main(demo=True)
+        start_bridge.assert_called_once()   # once per program, not per window
         self.assertEqual(len(sessions), 2)
         self.assertTrue(sessions[0].closed)
         self.assertFalse(sessions[1].demo_mode)

@@ -1,6 +1,16 @@
 {
     "container_name": "px4_fastlio_bridge",
 
+    "local_bridge": {
+        "name": "foxglove_bridge",
+        "title": "Foxglove bridge",
+        "command": "ros2 launch foxglove_bridge foxglove_bridge_launch.xml",
+        "address": "ws://localhost:8765",
+        "autostart": true,
+        "start_label": "Start Foxglove bridge",
+        "stop_label": "Stop Foxglove bridge"
+    },
+
     "host_buttons": [
         {
             "label": "Check running containers",

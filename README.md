@@ -30,6 +30,7 @@ sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 sshpass \
 | `gir1.2-pango-1.0`   | Text rendering (fonts) — installed automatically together with `gir1.2-gtk-3.0` |
 | `gir1.2-gdk-pixbuf-2.0` | Loading the logo image — installed automatically together with `gir1.2-gtk-3.0` |
 | `librsvg2-common`    | Draws the SVG button icons and the rotor loading animation. Already part of every Ubuntu desktop; without it the buttons simply show text only and a plain spinner is used |
+| ROS 2 + `ros-<distro>-foxglove-bridge` | Only for the **local Foxglove bridge** (see below), e.g. `sudo apt install ros-jazzy-foxglove-bridge`. Everything else works without ROS on this PC |
 | `sshpass`            | Feeds the SSH password without showing it on screen       |
 | `openssh-client`     | The `ssh` program itself (used for every connection; installed automatically on Ubuntu, listed here so nothing is missing) |
 
@@ -104,6 +105,7 @@ saves the displayed topics, including after disconnect.
 | `main.py`         | Starts the app in a clean environment (see above).  |
 | `gtk_app.py`      | The interface: VTE terminal, container management and ROS tools. |
 | `ui_theme.py`     | Ubuntu look and feel: dark theme (CSS), icon loading, button/card helpers and the rotor loading animation. |
+| `local_bridge.py` | Starts, watches and stops the local Foxglove bridge (runs on this PC, not on the drone). |
 | `diagnostics.py`  | Settings, command definitions, topic parsing and CSV export. |
 | `config.json`     | Shared defaults for user, IP, demo credentials and `dry_run`. |
 | `commands.json`   | The button definitions (labels, icons + commands). Data only.  |
@@ -122,7 +124,8 @@ saves the displayed topics, including after disconnect.
     "ip": "",
     "dry_run": true,
     "demo_user": "demo",
-    "demo_password": "demo"
+    "demo_password": "demo",
+    "ros_setup": ""
 }
 ```
 
@@ -133,6 +136,9 @@ saves the displayed topics, including after disconnect.
 - `demo_user` / `demo_password` — login that opens the GUI in demo mode
   (no drone connection, simulated answers). Not a security feature —
   just a preview mode.
+- `ros_setup` — only for the local Foxglove bridge: the ROS `setup.bash`
+  to use if `ros2` is not already set up by your `~/.bashrc`. Leave it
+  empty to find it automatically in `/opt/ros/`.
 
 ## How SSH works on Ubuntu
 
@@ -236,6 +242,32 @@ normally (stopping the container, verification) **except** the final
 `sudo shutdown`: the log prints exactly what it *would* have run.
 Set `"dry_run": false` in `config.json` only when you really want the
 drone to shut down from the app.
+
+## Local Foxglove bridge
+
+The **Foxglove bridge** card (top row, next to *Drone host*) controls a
+program that runs on **this computer**, not on the drone:
+`ros2 launch foxglove_bridge foxglove_bridge_launch.xml` (defined in the
+`local_bridge` section of `commands.json`).
+
+- It **starts together with OmniQuadGUI** (already at the login window,
+  `"autostart": true`) and keeps running across *Reconnect*. When you close
+  the program, it is stopped cleanly (Ctrl+C first, harder only if needed).
+- The status label is green (**RUNNING · ws://localhost:8765**, the address
+  to open in Foxglove) or red (**NOT RUNNING**), and one button starts or
+  stops it. This card stays usable even without a drone connection.
+- Its output appears in the **Background command log** with the prefix
+  `[foxglove]` (including what it printed before the main window opened).
+  Common problems come with a tip: bridge not installed, ROS not found, or
+  port 8765 already in use (another bridge is already running).
+- ROS setup: the app itself runs without ROS (that keeps the window from
+  freezing), so the bridge is started through `bash -i`, which reads your
+  `~/.bashrc` — the same ROS setup (and `ROS_DOMAIN_ID`) as in a normal
+  terminal. If `ros2` is still not found, `/opt/ros/<distro>/setup.bash` is
+  used (or `ros_setup` from `config.json`).
+- Note: `foxglove_bridge` listens on **all network interfaces** by default
+  (`0.0.0.0:8765`), so other computers on the same network can connect to
+  it too.
 
 ## Container shell and ROS controls on Ubuntu
 

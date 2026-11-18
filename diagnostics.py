@@ -31,7 +31,10 @@ def read_settings(path):
 
 
 def load_config(path=CONFIG_FILE, state_path=None):
-    settings = dict(user="rock", ip="", dry_run=True, demo_user="demo", demo_password="demo")
+    # ros_setup: ROS setup.bash for the local Foxglove bridge ("" = find
+    # it automatically in /opt/ros, see local_bridge.py).
+    settings = dict(user="rock", ip="", dry_run=True, demo_user="demo", demo_password="demo",
+                    ros_setup="")
     stored = read_settings(path)
     for key, default in settings.items():
         if isinstance(stored.get(key), type(default)):
@@ -94,6 +97,13 @@ def load_commands(path=COMMANDS_FILE):
                 raise CommandConfigError(f"commands.json: {group}[{index}] requires a label and an action.")
             if "command" in item and not isinstance(item["command"], str):
                 raise CommandConfigError(f"commands.json: {group}[{index}].command must be text.")
+    # Optional: a program that runs on THIS computer (the Foxglove bridge).
+    local = config.get("local_bridge")
+    if local is not None:
+        if not isinstance(local, dict) or any(
+            not isinstance(local.get(key), str) or not local[key].strip() for key in ("name", "command")
+        ):
+            raise CommandConfigError("commands.json: local_bridge requires a name and a command.")
     return config
 
 

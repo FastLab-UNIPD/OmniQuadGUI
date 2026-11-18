@@ -551,25 +551,33 @@ class ConnectionStatus(Gtk.Box):
 
 
 class BridgeStatus(Gtk.Box):
-    """The bridge container's status "label" (a rounded box):
+    """A bridge's status "label" (a rounded box):
 
         [=] px4_fastlio_bridge          (o)     <- refresh button
             RUNNING
 
-    Green with normal text when the container runs, red with grey text
-    when it does not, plain grey when the state is unknown (not checked
-    yet, or the check failed).  The small refresh button at the right
-    re-checks by hand; while a check runs it turns into the rotor.
+    Green with normal text when the bridge runs, red with grey text when
+    it does not, plain grey when the state is unknown (not checked yet,
+    or the check failed).  The optional refresh button at the right
+    re-checks by hand; while something is in progress the rotor spins
+    there instead.
+
+    icon:         which images/icons/ picture to show at the left.
+    on_refresh:   None = no refresh button (e.g. for a local program,
+                  whose state is always known).
+    running_text: the second line while running (e.g. with an address).
     """
 
     STATE_TEXT = {"running": "RUNNING", "stopped": "NOT RUNNING", "unknown": "STATUS UNKNOWN"}
     ICON_COLOR = {"running": GREEN_COLOR, "stopped": RED_COLOR, "unknown": "#8f8f8f"}
 
-    def __init__(self, name, refresh_tooltip, on_refresh):
+    def __init__(self, name, refresh_tooltip=None, on_refresh=None, icon="containers",
+                 running_text="RUNNING"):
         super().__init__(spacing=10)
         self.get_style_context().add_class("oq-bridge")
-        # One container icon per state (green / red / grey), made once.
-        self.icons = {state: load_icon_pixbuf("containers", 18, color)
+        self.running_text = running_text
+        # One icon per state (green / red / grey), made once.
+        self.icons = {state: load_icon_pixbuf(icon, 18, color)
                       for state, color in self.ICON_COLOR.items()}
         self.icon = Gtk.Image()
         self.icon.set_valign(Gtk.Align.CENTER)
@@ -587,22 +595,28 @@ class BridgeStatus(Gtk.Box):
         text.pack_start(self.state_label, False, False, 0)
         self.pack_start(text, True, True, 0)
 
-        # Right end: the refresh button, swapped for the rotor while a
-        # check runs (a Gtk.Stack shows one of its children at a time).
-        self.refresh_button = Gtk.Button()
-        self.refresh_button.get_style_context().add_class("oq-icon-btn")
-        self.refresh_button.set_tooltip_text(refresh_tooltip)
-        self.refresh_button.set_valign(Gtk.Align.CENTER)
-        refresh_icon = load_icon("reconnect", 16, "#d6d6d6")
-        if refresh_icon is not None:
-            self.refresh_button.add(refresh_icon)
+        # Right end: the refresh button (or an empty space), swapped for
+        # the rotor while something is in progress (a Gtk.Stack shows one
+        # of its children at a time).
+        if on_refresh is not None:
+            self.refresh_button = Gtk.Button()
+            self.refresh_button.get_style_context().add_class("oq-icon-btn")
+            self.refresh_button.set_tooltip_text(refresh_tooltip)
+            self.refresh_button.set_valign(Gtk.Align.CENTER)
+            refresh_icon = load_icon("reconnect", 16, "#d6d6d6")
+            if refresh_icon is not None:
+                self.refresh_button.add(refresh_icon)
+            else:
+                self.refresh_button.set_label("Refresh")
+            self.refresh_button.connect("clicked", on_refresh)
+            idle = self.refresh_button
         else:
-            self.refresh_button.set_label("Refresh")
-        self.refresh_button.connect("clicked", on_refresh)
+            self.refresh_button = None
+            idle = Gtk.Box()          # nothing to show when idle
         self.spinner = RotorSpinner(size=20)
         self.action = Gtk.Stack()
         self.action.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.action.add_named(self.refresh_button, "refresh")
+        self.action.add_named(idle, "refresh")
         self.action.add_named(self.spinner, "busy")
         self.pack_end(self.action, False, False, 0)
         self.set_state("unknown")
@@ -613,13 +627,14 @@ class BridgeStatus(Gtk.Box):
         for old in self.STATE_TEXT:
             context.remove_class("oq-bridge-" + old)
         context.add_class("oq-bridge-" + state)
-        self.state_label.set_text(self.STATE_TEXT[state])
+        self.state_label.set_text(
+            self.running_text if state == "running" else self.STATE_TEXT[state])
         if self.icons.get(state) is not None:
             self.icon.set_from_gicon(self.icons[state], Gtk.IconSize.BUTTON)
             self.icon.set_pixel_size(18)
 
     def set_checking(self, checking):
-        """Show the spinning rotor (True) or the refresh button (False)."""
+        """Show the spinning rotor (True) or the refresh button / nothing."""
         if checking:
             self.action.set_visible_child_name("busy")
             self.spinner.start()

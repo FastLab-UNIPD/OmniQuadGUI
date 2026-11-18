@@ -3,5 +3,6 @@
     "ip": "",
     "dry_run": true,
     "demo_user": "demo",
-    "demo_password": "demo"
+    "demo_password": "demo",
+    "ros_setup": ""
 }

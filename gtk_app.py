@@ -20,6 +20,9 @@ gi.require_version("Gtk", "3.0")      # make sure we get GTK 3, not GTK 4
 gi.require_version("Vte", "2.91")     # the VTE version Ubuntu ships for GTK 3
 from gi.repository import Gtk, GLib, Vte, Pango, Gdk, GdkPixbuf
 
+# The Foxglove bridge that runs on THIS computer (not on the drone).
+from local_bridge import LocalBridge
+
 # Colours, icons, button styles and the rotor loading animation.
 from ui_theme import (GREEN_COLOR, RED_COLOR, BridgeStatus, ConnectionStatus, RotorSpinner, apply_theme,
                       load_icon, make_button, make_card, make_column_title, style_terminal,
@@ -61,6 +64,34 @@ def build_ssh_argv(user, ip, extra_options=(), remote_command=None):
     if remote_command is not None:
         argv.extend(remote_command)
     return argv
+
+
+def create_local_bridge(commands, config):
+    """The local program from commands.json ("local_bridge"), or None."""
+    local = commands.get("local_bridge")
+    if not local:
+        return None
+    return LocalBridge(local["name"], local["command"], config.get("ros_setup", ""))
+
+
+class WidgetGroup:
+    """Several widgets that are switched on / off together.
+
+    Used for "all the controls that talk to the drone": they are greyed
+    out while a drone command runs or after the connection ended -- but
+    the local Foxglove bridge card is NOT part of the group, so it stays
+    usable all the time.
+    """
+
+    def __init__(self, *widgets):
+        self.widgets = widgets
+
+    def set_sensitive(self, enabled):
+        for widget in self.widgets:
+            widget.set_sensitive(enabled)
+
+    def get_sensitive(self):
+        return all(widget.get_sensitive() for widget in self.widgets)
 
 
 def feed_text(terminal, text):
@@ -204,7 +235,7 @@ def explain_ssh_error(returncode, output, ip, user):
 
 class OmniQuadApp:
 
-    def __init__(self, demo=False):
+    def __init__(self, demo=False, local_bridge=None):
         # Use the logo as the window icon (taskbar / title bar) for ALL
         # windows this app opens.
         try:
@@ -215,6 +246,9 @@ class OmniQuadApp:
         # ---- shared state ----
         self.config = load_config()          # user / ip / dry_run
         self.commands = load_commands()
+        # The local Foxglove bridge.  main() creates it ONCE and passes it
+        # in, so it keeps running across "Reconnect" (a new OmniQuadApp).
+        self.local_bridge = local_bridge or create_local_bridge(self.commands, self.config)
         self.password = ""                   # only ever kept in memory
         self.control_socket = ""             # path of the shared ssh socket
         self.ssh_tmp_dir = ""                # folder that holds that socket
@@ -672,14 +706,14 @@ class OmniQuadApp:
             return False   # run only once
 
         # -- RIGHT: all the button cards (see build_right_panel) ----------
-        self.controls = self.build_right_panel()
+        right_panel = self.build_right_panel()
         sidebar = Gtk.ScrolledWindow()
         # NEVER scroll sideways: the sidebar then always asks for the full
         # width of the button columns, so no button is hidden at startup.
         # (Vertical scrolling stays possible for very small screens.)
         sidebar.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         sidebar.set_overlay_scrolling(True)
-        sidebar.add(self.controls)
+        sidebar.add(right_panel)
         # resize=False, shrink=False: extra window width goes to the
         # terminal, and the divider can never squeeze the buttons away.
         pane.pack2(sidebar, False, False)
@@ -1011,11 +1045,14 @@ class OmniQuadApp:
         # column; create it first so the builders can see it.
         self.stop_command_button = self.make_stop_command_button()
 
-        # Top row: the small Drone host card on the left; the rest of the
-        # row is left EMPTY for now (room for future controls).
+        # Top row: the small Drone host card, then the local Foxglove
+        # bridge card; the rest of the row is left EMPTY for now.
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         host_card = self.build_host_panel()
         top.pack_start(host_card, False, False, 0)
+        local_card = self.build_local_bridge_panel()
+        if local_card is not None:
+            top.pack_start(local_card, False, False, 0)
         outer.pack_start(top, False, False, 0)
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -1028,9 +1065,17 @@ class OmniQuadApp:
 
         # The host card is exactly as wide as the shell column under it,
         # so the two line up.
+        # (The Foxglove card gets the same width, so the top row is tidy.)
         self.left_column_width = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
         self.left_column_width.add_widget(host_card)
         self.left_column_width.add_widget(shell_panel)
+        if local_card is not None:
+            self.left_column_width.add_widget(local_card)
+
+        # Everything that talks to the DRONE is switched on/off together
+        # (set_drone_buttons_enabled).  The local Foxglove card is not in
+        # this group: it must keep working even without a connection.
+        self.controls = WidgetGroup(host_card, bottom)
 
         # The ROS buttons start DISABLED: they only work inside the
         # container shell.  "Enter" additionally needs the container to
@@ -1038,6 +1083,86 @@ class OmniQuadApp:
         # until that first check has succeeded it stays disabled, too.
         self.update_shell_button_state()
         return outer
+
+    # ------------------------------------------------------------------
+    # Local Foxglove bridge (runs on THIS computer, not on the drone)
+    # ------------------------------------------------------------------
+    def build_local_bridge_panel(self):
+        """The FOXGLOVE BRIDGE card (top row, next to Drone host).
+
+            FOXGLOVE BRIDGE
+            [~] foxglove_bridge
+                RUNNING · ws://localhost:8765
+            [ Stop Foxglove bridge ]
+
+        Same look as the Drone host card: a status label (green running /
+        red stopped) and ONE Start/Stop button.  No refresh button: the
+        app started the program itself, so it always knows its state.
+        Returns None if commands.json has no "local_bridge" section.
+        """
+        if self.local_bridge is None:
+            return None
+        local = self.commands["local_bridge"]
+        card, body = make_card(local.get("title", "Local bridge"), icon="laptop")
+        body.set_spacing(8)
+
+        address = local.get("address", "")
+        self.local_bridge_status = BridgeStatus(
+            self.local_bridge.name, icon="broadcast",
+            running_text="RUNNING · " + address if address else "RUNNING")
+        if address:
+            self.local_bridge_status.set_tooltip_text(
+                "Runs on this computer. Connect Foxglove to " + address)
+        body.pack_start(self.local_bridge_status, False, False, 0)
+
+        self.start_local_button = make_button(
+            local.get("start_label", "Start"), icon="play", icon_color=GREEN_COLOR)
+        self.start_local_button.connect("clicked", self.on_start_local_bridge)
+        self.stop_local_button = make_button(
+            local.get("stop_label", "Stop"), icon="stop", icon_color=RED_COLOR)
+        self.stop_local_button.connect("clicked", self.on_stop_local_bridge)
+        # Show both first: a Gtk.Stack can only switch to a visible child.
+        self.start_local_button.show_all()
+        self.stop_local_button.show_all()
+        self.local_toggle = Gtk.Stack()
+        self.local_toggle.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.local_toggle.add_named(self.start_local_button, "start")
+        self.local_toggle.add_named(self.stop_local_button, "stop")
+        body.pack_start(self.local_toggle, False, False, 0)
+
+        # From now on, this window shows the bridge's output and state.
+        # First the lines printed before the window opened, then live.
+        for line in self.local_bridge.recent_lines:
+            self.show_local_bridge_output(line)
+        self.local_bridge.on_output = self.show_local_bridge_output
+        self.local_bridge.on_state_changed = self.update_local_bridge_widgets
+        self.update_local_bridge_widgets()
+        return card
+
+    def show_local_bridge_output(self, line):
+        """One line printed by the Foxglove bridge -> the command log."""
+        self.append_log("[foxglove] " + line)
+
+    def update_local_bridge_widgets(self):
+        """Show the local bridge's state in its card."""
+        if self.closed:
+            return
+        running = self.local_bridge.is_running()
+        self.local_bridge_status.set_checking(False)
+        self.local_bridge_status.set_state("running" if running else "stopped")
+        self.local_toggle.set_visible_child_name("stop" if running else "start")
+        self.start_local_button.set_sensitive(True)
+        self.stop_local_button.set_sensitive(True)
+
+    def on_start_local_bridge(self, button):
+        self.local_bridge.start()
+
+    def on_stop_local_bridge(self, button):
+        # Stopping takes a moment (ros2 launch shuts its nodes down):
+        # spin the rotor and block the button until it has ended.
+        self.stop_local_button.set_sensitive(False)
+        self.local_bridge_status.set_checking(True)
+        self.local_bridge.stop()
 
     def make_stop_command_button(self):
         """Create the BIG 'Stop current command' button (sends Ctrl+C).
@@ -1097,6 +1222,10 @@ class OmniQuadApp:
         self.stop_bridge_button = make_button(
             stop.get("label", "Stop"), icon=stop.get("icon"), icon_color=RED_COLOR)
         self.stop_bridge_button.connect("clicked", self.on_stop_container)
+        # A Gtk.Stack can only switch to a child that is already visible,
+        # so show both buttons first (otherwise it starts on "Start").
+        self.start_bridge_button.show_all()
+        self.stop_bridge_button.show_all()
         self.bridge_toggle = Gtk.Stack()
         self.bridge_toggle.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.bridge_toggle.add_named(self.start_bridge_button, "start")
@@ -2053,6 +2182,11 @@ class OmniQuadApp:
         self.session_ended = True
         self.closed = True
         self.password = ""
+        # The local bridge keeps running (it belongs to the program, not
+        # to this window); just stop sending its output here.
+        if self.local_bridge is not None:
+            self.local_bridge.on_output = None
+            self.local_bridge.on_state_changed = None
         for echo in self.echo_windows.copy():
             echo.destroy()
         if self.control_socket:
@@ -2074,10 +2208,18 @@ class OmniQuadApp:
 
 
 def main(demo=False):
+    local_bridge = None
     try:
         apply_theme()
+        # The local Foxglove bridge starts together with the program (if
+        # "autostart" is true in commands.json) and keeps running until
+        # the program closes -- also across "Reconnect".
+        commands = load_commands()
+        local_bridge = create_local_bridge(commands, load_config())
+        if local_bridge is not None and commands["local_bridge"].get("autostart", True):
+            local_bridge.start()
         while True:
-            app = OmniQuadApp(demo=demo)
+            app = OmniQuadApp(demo=demo, local_bridge=local_bridge)
             demo = False
             def close_window():
                 (app.main_window or app.start_window).close()
@@ -2113,3 +2255,8 @@ def main(demo=False):
             dialog.destroy()
         except Exception:
             pass  # even the dialog failed -- nothing more we can do
+    finally:
+        # The program ends (normally or after an error): stop the local
+        # Foxglove bridge cleanly, so it never keeps running on its own.
+        if local_bridge is not None:
+            local_bridge.stop(wait=True)

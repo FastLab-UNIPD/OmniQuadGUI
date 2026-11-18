@@ -29,6 +29,8 @@ FILES
                    login window, main window, ssh session, background
                    commands, bridge status, shell/ROS buttons, topics,
                    echo windows, shutdown, connection status checks.
+- local_bridge.py  LocalBridge: starts / watches / stops the LOCAL Foxglove
+                   bridge (a program on THIS PC, not on the drone).
 - ui_theme.py      ALL look-and-feel: THEME_CSS, apply_theme(), icons,
                    make_button / make_card / make_card_title,
                    ConnectionStatus, BridgeStatus, RotorSpinner.
@@ -36,11 +38,15 @@ FILES
                    commands.json loading/validation, topic_list_command,
                    topic_names, export_csv.
 - config.json      user "rock", ip "" , dry_run true, demo_user/password
-                   "demo"/"demo". Never stores passwords.
+                   "demo"/"demo", ros_setup "" (fallback setup.bash for
+                   the local bridge; "" = /opt/ros/* auto). Never stores
+                   passwords.
 - commands.json    button definitions as DATA: container_name,
                    host_buttons, terminal_buttons; each entry has label,
                    action, optional command and "icon" (= file name in
                    images/icons/ without .svg). No emojis in labels.
+                   Optional "local_bridge" section: name, title, command,
+                   address, autostart, start_label, stop_label.
 - launch.sh        portable launcher: cd to own folder, install
                    images/omniquadgui.png once into
                    ~/.local/share/icons/hicolor/256x256/apps, exec main.py.
@@ -57,6 +63,8 @@ DEPENDENCIES (apt only, nothing from pip)
 ------------
 python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, sshpass, openssh-client,
 librsvg2-common (SVG icons + rotor; on every Ubuntu desktop already).
+For the local bridge only: ROS 2 + ros-<distro>-foxglove-bridge (this PC
+has Jazzy + foxglove_bridge 3.6.0; ~/.bashrc sources ROS).
 NOT available / not a dependency: python3-gi-cairo (see LESSONS).
 
 HOW TO RUN / TEST
@@ -68,7 +76,8 @@ Test:  the user's login shell sources ROS Jazzy, so use a clean env:
          XAUTHORITY=$XAUTHORITY XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
          DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS \
          python3 -m unittest discover -s tests
-       (11 run, 1 skipped: the loopback SSH test needs the CI fixture.)
+       (21 run, 1 skipped: the loopback SSH test needs the CI fixture.
+       Add -W error::ResourceWarning to catch unclosed pipes.)
 Test pattern: demo login, or patch run_ssh_background; drive the main
 loop with GLib.MainContext.default().iteration(False) until a condition
 holds; stub dialogs (Gtk.FileChooserDialog, show_loud_warning).
@@ -94,9 +103,10 @@ Main window:
 - LEFT (vertical Paned, 50/50): "Drone terminal" card (VTE) and
   "Background command log" card (Follow log check box).
 - RIGHT (build_right_panel):
-    top row:   small DRONE HOST card (same width as the shell column,
-               Gtk.SizeGroup left_column_width); rest of the row EMPTY
-               ON PURPOSE (reserved for future controls).
+    top row:   small DRONE HOST card, then the FOXGLOVE BRIDGE card
+               (both same width as the shell column, Gtk.SizeGroup
+               left_column_width); rest of the row EMPTY ON PURPOSE
+               (reserved for future controls).
                Inside: BridgeStatus label for px4_fastlio_bridge
                (green + normal text = running, red + grey text = not
                running, grey = unknown) with a refresh icon button that a
@@ -157,6 +167,27 @@ BEHAVIOUR / ARCHITECTURE
   ssh over the control socket -> docker exec -it ... bash -> 1.5 s ->
   the echo command); several can run at once; closing stops it. hz
   commands type into the main terminal.
+- LOCAL FOXGLOVE BRIDGE (local_bridge.py + build_local_bridge_panel):
+  main() creates ONE LocalBridge (create_local_bridge) before the
+  login window, starts it if commands.json local_bridge.autostart, passes
+  it to every OmniQuadApp (survives Reconnect), and stops it in main()'s
+  `finally` with stop(wait=True). Started as
+  bash -ic 'command -v ros2 || source <ros_setup>; exec <command>'
+  (bash -i reads ~/.bashrc = the user's ROS env + ROS_DOMAIN_ID; the
+  app's own env stays ROS-free), stdin DEVNULL, stdout+stderr piped,
+  start_new_session=True (own process group). Stop: SIGINT to the
+  group, then SIGTERM, then SIGKILL after STOP_GRACE_SECONDS=5 each,
+  escalating while ANY group member lives (group_alive), not only the
+  main process. A reader thread forwards lines via GLib.idle_add to
+  on_output (-> log, prefix "[foxglove]"), keeps the last 300 in
+  recent_lines (replayed when a main window opens), and reports the end
+  (on_state_changed). Plain-English tips for: package not found, ros2
+  not found, address already in use. The card (BridgeStatus with no
+  refresh button, Start/Stop Gtk.Stack) is NOT in self.controls, so it
+  stays usable while drone controls are disabled / disconnected.
+  self.controls is a WidgetGroup(host_card, bottom row) - only the
+  drone sections. Verified on this PC: listening on :8765 after ~1.2 s,
+  clean stop in ~0.8 s, no leftover processes.
 - Log area capped at MAX_LOG_LINES 5000 / MAX_LOG_CHARS 512000.
 - Every message the app prints into a VTE terminal goes through
   feed_text() ("\n" -> "\r\n", no "staircase" text).
@@ -201,6 +232,9 @@ LESSONS (do not regress)
 - Login window: Gtk.Overlay measures only its main child (the logo); a
   Gtk.SizeGroup (BOTH) between logo and form keeps the form unclipped.
 - no_show_all widgets ignore show_all() even on themselves.
+- Gtk.Stack.set_visible_child_name() is ignored while that child is still
+  hidden: show the stack's children (button.show_all()) BEFORE adding
+  them, or a toggle built for the "running" state shows "Start".
 - Never read export data back out of row widgets (an icon in a row once
   broke the old container CSV export).
 - VTE spawn_async argument order on this Ubuntu: (Vte.PtyFlags.DEFAULT,
@@ -225,8 +259,13 @@ OPEN ITEMS
   because it had no ROS environment.
 - If the user types `exit` by hand inside the container, the app's flag
   stays True until Leave/Stop/Shutdown (README: always use Leave).
-- The empty space in the top row of the right panel is reserved for
-  future controls.
+- The empty space in the top row of the right panel (after the Foxglove
+  card) is reserved for future controls.
+- foxglove_bridge listens on 0.0.0.0:8765 (all interfaces) by default;
+  pass address:=127.0.0.1 in the command if it must be local-only.
+- If the app is killed hard (SIGKILL / crash of Python itself), the
+  bridge keeps running (own process group); the next start then reports
+  "address already in use" with a tip.
 
 HISTORY (short)
 ---------------
@@ -240,4 +279,4 @@ HISTORY (short)
   gradients, rotor spinner); Ubuntu-orange palette; header connection
   status; layout reworked several times; Windows support removed;
   container list replaced by the bridge status label + Start/Stop
-  toggle; three-blade rotor.
+  toggle; three-blade rotor; local Foxglove bridge card (autostart).
