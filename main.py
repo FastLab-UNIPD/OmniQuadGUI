@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Launch the native OmniQuadGUI interface for this desktop."""
 
 import os

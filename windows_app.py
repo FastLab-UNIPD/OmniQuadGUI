@@ -58,6 +58,8 @@ class DiagnosticsWindow:
         self.demo = tk.BooleanVar()
         self.status = tk.StringVar(value="Connect once in the terminal to verify the host. The lists use SSH key authentication.")
         self.results = queue.Queue()
+        self.rows = []
+        self.filter_text = tk.StringVar()
 
         target = ttk.LabelFrame(frame, text="SSH connection", padding=10)
         target.pack(fill="x")
@@ -83,6 +85,10 @@ class DiagnosticsWindow:
         self.inputs = (user, host)
         self.actions = (containers, topics, demo)
 
+        search = ttk.Frame(frame)
+        search.pack(fill="x", pady=(0, 8))
+        ttk.Label(search, text="Filter by name").pack(side="left", padx=(0, 8))
+        ttk.Entry(search, textvariable=self.filter_text).pack(side="left", fill="x", expand=True)
         panel = ttk.Frame(frame)
         panel.pack(fill="both", expand=True)
         self.table = ttk.Treeview(panel, columns=("name", "status"), show="headings")
@@ -92,11 +98,12 @@ class DiagnosticsWindow:
         self.table.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.table.pack(fill="both", expand=True)
+        self.filter_text.trace_add("write", lambda *_: self.render_rows())
         ttk.Label(frame, textvariable=self.status, wraplength=520, justify="left").pack(
             fill="x", pady=(8, 0))
 
     def change_mode(self):
-        self.table.delete(*self.table.get_children())
+        self.clear_results()
         self.status.set("Offline demo · simulated data" if self.demo.get() else "Ready")
         self.set_busy(False)
 
@@ -116,7 +123,7 @@ class DiagnosticsWindow:
         self.status.set("SSH terminal opened. Complete authentication in that window.")
 
     def query(self, kind):
-        self.table.delete(*self.table.get_children())
+        self.clear_results()
         self.table["displaycolumns"] = ("name",) if kind == "topics" else ("name", "status")
         self.table.heading("name", text="ROS topic" if kind == "topics" else "Container")
         if self.demo.get():
@@ -157,10 +164,22 @@ class DiagnosticsWindow:
             rows = [(name,) for name in topic_names(output)]
         else:
             rows = [line.split("|", 1) for line in output.splitlines() if "|" in line]
-        for row in rows:
-            self.table.insert("", "end", values=row)
+        self.rows = rows
+        self.render_rows()
         source = "Offline demo" if self.demo.get() else self.user.get() + "@" + self.host.get()
         self.status.set(f"{source} · {len(rows)} {kind}")
+
+    def clear_results(self):
+        self.rows = []
+        self.filter_text.set("")
+
+    def render_rows(self):
+        self.table.delete(*self.table.get_children())
+        query = self.filter_text.get().strip().casefold()
+        for row in self.rows:
+            if query not in row[0].casefold():
+                continue
+            self.table.insert("", "end", values=row)
 
 
 def main():

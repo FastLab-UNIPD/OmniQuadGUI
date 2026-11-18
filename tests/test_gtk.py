@@ -33,6 +33,12 @@ class GtkDemoTests(unittest.TestCase):
             app.topics_listbox.select_row(app.topics_listbox.get_row_at_index(0))
             self.assertEqual(app.selected_topic, "/Odometry")
             self.assertTrue(app.echo_selected_button.get_sensitive())
+            app.topic_filter.set_text("LiVoX")
+            self.assertEqual(app.selected_topic, "")
+            visible = [row.get_child().get_text() for row in app.topics_listbox.get_children()
+                       if row.get_child_visible()]
+            self.assertEqual(visible, ["/livox/imu", "/livox/lidar"])
+            app.topic_filter.set_text("")
             app.list_topics_button.clicked()
             until(lambda: not app.topics_request)
             self.assertFalse(app.echo_selected_button.get_sensitive())
@@ -42,3 +48,9 @@ class GtkDemoTests(unittest.TestCase):
             app.on_ssh_child_exited(app.terminal, 0)
             app.set_drone_buttons_enabled(True)
             self.assertFalse(app.controls.get_sensitive())
+            with patch("gtk_app.MAX_LOG_LINES", 3), patch("gtk_app.MAX_LOG_CHARS", 30):
+                app.append_log("old\n" * 15 + "latest")
+                buffer = app.log_buffer
+                self.assertLessEqual(buffer.get_line_count(), 3)
+                self.assertLessEqual(buffer.get_char_count(), 30)
+                self.assertTrue(buffer.get_text(*buffer.get_bounds(), False).endswith("latest\n"))

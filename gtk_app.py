@@ -34,6 +34,8 @@ LOGO_FILE = os.path.join(APP_DIR, "omniquadgui.png")   # app logo
 # How long (seconds) the quick connection check may take before we give
 # up and report "cannot reach the drone".
 CONNECT_TIMEOUT_SECONDS = 10
+MAX_LOG_LINES = 5000
+MAX_LOG_CHARS = 512_000
 
 
 def save_config(config):
@@ -524,7 +526,7 @@ class OmniQuadApp:
         self.log_textview.set_editable(False)    # read-only
         self.log_textview.set_cursor_visible(False)
         self.log_textview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.log_textview.override_font(Pango.FontDescription("Monospace 9"))
+        self.log_textview.set_monospace(True)
         self.log_buffer = self.log_textview.get_buffer()
         log_scrolled.add(self.log_textview)
         log_frame.add(log_scrolled)
@@ -734,10 +736,15 @@ class OmniQuadApp:
         GLib.idle_add from background threads.
         """
         stamp = time.strftime("[%H:%M:%S] ")
-        end_iter = self.log_buffer.get_end_iter()
-        self.log_buffer.insert(end_iter, stamp + text.rstrip() + "\n")
-        # Keep the newest lines visible.
-        self.log_textview.scroll_mark_onscreen(self.log_buffer.get_insert())
+        buffer = self.log_buffer
+        buffer.insert(buffer.get_end_iter(), stamp + text[-MAX_LOG_CHARS:].rstrip() + "\n")
+        excess = buffer.get_char_count() - MAX_LOG_CHARS
+        if excess > 0:
+            buffer.delete(buffer.get_start_iter(), buffer.get_iter_at_offset(excess))
+        excess_lines = buffer.get_line_count() - MAX_LOG_LINES
+        if excess_lines > 0:
+            buffer.delete(buffer.get_start_iter(), buffer.get_iter_at_line(excess_lines))
+        self.log_textview.scroll_to_iter(buffer.get_end_iter(), 0.0, False, 0.0, 1.0)
 
     # ------------------------------------------------------------------
     # The right-hand button panel
@@ -923,6 +930,9 @@ class OmniQuadApp:
         topic_row.pack_start(self.topics_spinner, False, False, 0)
         panel.add(topic_row)
 
+        self.topic_filter = Gtk.SearchEntry()
+        self.topic_filter.set_placeholder_text("Filter topics by name")
+        panel.add(self.topic_filter)
         topics_scrolled = Gtk.ScrolledWindow()
         topics_scrolled.set_policy(
             Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -931,6 +941,8 @@ class OmniQuadApp:
         # SINGLE selection: one topic can be highlighted and echoed.
         self.topics_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.topics_listbox.connect("row-selected", self.on_topic_selected)
+        self.topics_listbox.set_filter_func(self.topic_matches_filter)
+        self.topic_filter.connect("changed", self.on_topic_filter_changed)
         topics_scrolled.add(self.topics_listbox)
         panel.add(topics_scrolled)
 
@@ -1149,7 +1161,7 @@ class OmniQuadApp:
         hbox.pack_start(status_label, False, False, 0)
         row.add(hbox)
         self.container_listbox.add(row)
-        self.container_listbox.show_all()
+        row.show_all()
 
     # ------------------------------------------------------------------
     # Button: Start Fast-LIO container
@@ -1549,6 +1561,7 @@ class OmniQuadApp:
         self.update_shell_button_state()
         self.topics_spinner.show()
         self.topics_spinner.start()
+
         def completed(success, returncode, output):
             if self.topics_request is request:
                 self.on_topics_result(success, returncode, output)
@@ -1593,7 +1606,16 @@ class OmniQuadApp:
         label.set_xalign(0.0)
         row.add(label)
         self.topics_listbox.add(row)
-        self.topics_listbox.show_all()
+        row.show_all()
+
+    def topic_matches_filter(self, row):
+        return self.topic_filter.get_text().casefold() in row.get_child().get_text().casefold()
+
+    def on_topic_filter_changed(self, entry):
+        self.topics_listbox.invalidate_filter()
+        selected = self.topics_listbox.get_selected_row()
+        if selected is not None and not self.topic_matches_filter(selected):
+            self.topics_listbox.unselect_row(selected)
 
     def on_topic_selected(self, listbox, row):
         """A topic row was clicked: remember it for 'Echo selected topic'."""

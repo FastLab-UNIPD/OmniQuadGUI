@@ -21,6 +21,7 @@ python main.py
 The desktop window uses Python's Tkinter. Select **Offline demo** and click
 **Running containers** or **ROS topics** to try it immediately. No network
 connection or local Docker engine is required.
+Use **Filter by name** to narrow the displayed results locally.
 
 For live use, enter the SSH user and host, then choose **Open SSH terminal**.
 Windows OpenSSH handles the password prompt or SSH key, and asks you to verify
@@ -74,8 +75,8 @@ python3 main.py
 
 or double-click **`OmniQuadGUI.desktop`** inside the folder in the file
 manager (right-click it once and choose **Allow Launching** first).
-The launcher is portable: it contains no user name and no absolute
-path, so the whole folder (including `launch.sh` and the launcher) can
+The launcher resolves the application path relative to its own folder
+and uses Ubuntu's system Python, so the folder (including `launch.sh`) can
 be copied to any PC, for any user, to any location. On the first start
 `launch.sh` copies the app icon into the user's private icon folder, so
 the icon shows up in the file manager and the taskbar from then on.
@@ -182,7 +183,8 @@ The right-hand column has four buttons (built from `commands.json`), and
 the **left half** of the window is split 50/50 (drag the divider to
 change it): the terminal on top, and below it the small
 **Background command log** — every command the app runs remotely, and
-its full output, is appended there with a timestamp. The buttons
+its output, is appended there with a timestamp. The on-screen log keeps
+the most recent 5,000 lines, up to 512,000 characters. The buttons
 themselves never freeze the window — the ssh commands run in background
 threads and reuse the master connection
 (`ssh -o ControlPath=<socket> rock@<ip> "<command>"`), so no password is
@@ -275,6 +277,8 @@ come from that command's output, so terminal width, scrollback and the VTE
 version do not affect the list. The main terminal stays available while the
 request runs. A refresh replaces the old list and selection. If the container
 is still starting, refresh again after its nodes have come up.
+Type part of a name into **Filter topics by name** to search the current list
+without sending another SSH request.
 
 ### Echo selected topic
 
