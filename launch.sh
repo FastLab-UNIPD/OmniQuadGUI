@@ -28,4 +28,4 @@ fi
 
 # Start the app by absolute path so this remains correct even if a caller
 # changes directory between launching this script and starting Python.
-exec python3 "$APP_DIR/main.py"
+exec /usr/bin/python3 "$APP_DIR/main.py" "$@"

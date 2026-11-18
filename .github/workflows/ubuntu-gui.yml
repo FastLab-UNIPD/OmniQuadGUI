@@ -1,0 +1,33 @@
+name: Desktop checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  demo:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["22.04", "24.04"]
+    container: ubuntu:${{ matrix.release }}
+    steps:
+      - name: Install desktop test dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 xvfb xauth openssh-server sshpass
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise GTK and the SSH client against loopback
+        run: sh tests/ci-loopback.sh
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise the native Windows interface
+        run: python -B -m unittest discover -s tests -v

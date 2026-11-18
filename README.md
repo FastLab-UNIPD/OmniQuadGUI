@@ -1,16 +1,47 @@
 # OmniQuadGUI
 
-A small Ubuntu desktop app that connects over SSH to the onboard computer of a
-drone (Radxa Rock 5B, ROS 2, Docker) and shows that connection in a large,
-always-visible terminal, with buttons for container management and ROS topic
-inspection.
+A desktop app that connects over SSH to the onboard computer of a
+drone (Radxa Rock 5B, ROS 2, Docker) for container and ROS diagnostics. Ubuntu includes an embedded terminal and
+container management. Windows includes a native diagnostics window and a
+separate interactive SSH terminal.
 
 **It does not control flight.** Use it only while the drone sits on the desk,
 with the battery disconnected or rotors removed.
 
 ---
 
-## 1. Install (once)
+| Desktop capability | Windows | Ubuntu 22.04 / 24.04 |
+| --- | --- | --- |
+| Offline demo, list containers and ROS topics, filter and export CSV | Yes | Yes |
+| Interactive SSH | Separate OpenSSH terminal | Embedded VTE terminal |
+| Authentication for background queries | Existing SSH key or agent | Reuses the logged-in master connection |
+| Container lifecycle, echo windows and shutdown controls | Via manual SSH commands | Dedicated GUI controls |
+
+## Windows with an existing Conda environment
+
+From the repository folder in your activated Conda prompt, run:
+
+```powershell
+python main.py
+```
+
+The desktop window uses Python's Tkinter. Select **Offline demo** and click
+**Running containers** or **ROS topics** to try it immediately. No network
+connection or local Docker engine is required.
+Use **Filter by name** to narrow the displayed results locally. **Export CSV**
+saves the visible rows with column headers. An active filter is preserved
+when refreshing the same list. To open the demo directly on either platform,
+run `python main.py --demo`.
+
+For live use, enter the SSH user and host, then choose **Open SSH terminal**.
+Windows OpenSSH handles the password prompt or SSH key, and asks you to verify
+a new host. The two list buttons run read-only queries in the background.
+They require a previously verified host and a working SSH key or agent.
+If you use password authentication, you can run commands in the interactive
+terminal. Container start/stop, the embedded terminal and shutdown controls
+are available in the Ubuntu interface.
+
+## Install on Ubuntu
 
 On a fresh Ubuntu desktop (tested style: 22.04 / 24.04), open a normal
 terminal and run:
@@ -34,7 +65,7 @@ sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 sshpass \
 
 The app itself uses **only the Python standard library** (json, os,
 subprocess, threading, …) plus the GTK/VTE libraries above — there is
-**nothing to install with `pip`**, and the whole GUI is one Python file.
+**nothing to install with `pip`**.
 
 Ubuntu's package manager installs `gir1.2-pango-1.0`,
 `gir1.2-gdk-pixbuf-2.0` and `openssh-client` automatically as
@@ -45,7 +76,7 @@ touches.
 On the drone side, SSH must be enabled and the user (default `rock`) must be
 allowed to log in with a password.
 
-## 2. Run
+## Run on Ubuntu
 
 ```bash
 cd OmniQuadGUI
@@ -54,8 +85,8 @@ python3 main.py
 
 or double-click **`OmniQuadGUI.desktop`** inside the folder in the file
 manager (right-click it once and choose **Allow Launching** first).
-The launcher is portable: it contains no user name and no absolute
-path, so the whole folder (including `launch.sh` and the launcher) can
+The launcher resolves the application path relative to its own folder
+and uses Ubuntu's system Python, so the folder (including `launch.sh`) can
 be copied to any PC, for any user, to any location. On the first start
 `launch.sh` copies the app icon into the user's private icon folder, so
 the icon shows up in the file manager and the taskbar from then on.
@@ -75,7 +106,7 @@ ROS sourced.
 - On success the main window opens with the drone's terminal embedded.
 
 ### Demo view (no drone needed)
-Log in with the **demo credentials** (default: user `demo`, password
+Click **Open offline demo**, or log in with the **demo credentials** (default: user `demo`, password
 `demo`, both changeable in `config.json`). The GUI opens normally —
 title shows **DEMO (not connected)** — but:
 
@@ -86,15 +117,26 @@ title shows **DEMO (not connected)** — but:
   sequences with a small pretend state, and the log area fills as
   usual. Perfect for trying the GUI before the drone is on your desk.
 
-The last successfully used IP is remembered in `config.json`.
-**The password is never saved anywhere** — you type it on every start.
+Ubuntu remembers the user and host after a successful SSH check. Windows
+remembers them after a successful background query. These two fields are
+stored in `%LOCALAPPDATA%\OmniQuadGUI\connection.json` on Windows and
+`$XDG_STATE_HOME/OmniQuadGUI/connection.json` on Ubuntu (default base
+`~/.local/state`). Removing this file restores the defaults from the repo.
+Login passwords stay in memory.
 
-## 3. Files in this folder
+After an Ubuntu SSH disconnect, the terminal and last results stay visible.
+Choose **Reconnect** to return to the login window. **Export containers CSV**
+and **Export topics CSV** save the displayed rows, including after disconnect.
+
+## Files and configuration
 
 | File              | Purpose                                                        |
 |-------------------|----------------------------------------------------------------|
-| `main.py`         | The whole app (start window, connection, terminal, buttons).   |
-| `config.json`     | Settings: user name, last-used IP, `dry_run` flag. Editable.   |
+| `main.py`         | Selects the native desktop for the current OS.   |
+| `gtk_app.py`      | Ubuntu interface, VTE terminal and container management. |
+| `windows_app.py`  | Native Windows diagnostics and SSH terminal launcher. |
+| `diagnostics.py`  | Shared settings, diagnostic commands and parsing. |
+| `config.json`     | Shared defaults for user, IP, demo credentials and `dry_run`. |
 | `commands.json`   | The button definitions (labels + commands). Data only.         |
 | `omniquadgui.png` | The app logo (login background, window + shortcut icon).       |
 | `launch.sh`       | Portable launcher script used by `OmniQuadGUI.desktop`; finds its own folder, installs the icon once, then starts the app. |
@@ -116,14 +158,14 @@ The last successfully used IP is remembered in `config.json`.
 ```
 
 - `user` — the login name on the drone.
-- `ip` — remembered automatically after a successful connect.
+- `ip` — initial host when there is no saved connection for this user.
 - `dry_run` — leave `true` for now: the shutdown button (stage 2) will
   *print what it would run* instead of actually shutting the drone down.
 - `demo_user` / `demo_password` — login that opens the GUI in demo mode
   (no drone connection, simulated answers). Not a security feature —
   just a preview mode.
 
-## 4. How the SSH connection works (why there is only one password prompt)
+## How SSH works on Ubuntu
 
 1. When you click **Connect**, the app first runs a quick non-interactive
    check: `sshpass -e ssh rock@<ip> echo ok`.
@@ -139,7 +181,7 @@ The last successfully used IP is remembered in `config.json`.
      **master connection**. It stays open as long as the app window is open.
    - Because the check already verified the password, this session logs in
      silently — no second password prompt.
-3. In stage 2, every button that needs to *read* something from the drone
+3. Every button that needs to *read* something from the drone
    (container lists, safety checks) runs its own short, non-interactive
    `ssh -o ControlPath=<socket> rock@<ip> "<command>"`. That reuses the
    master connection through the socket file, so **no password is needed
@@ -153,13 +195,15 @@ The last successfully used IP is remembered in `config.json`.
 The terminal itself always stays visible: buttons that you "watch live"
 simply type their command into that terminal, exactly as if you had typed it.
 
-## 5. Stage 2: the host buttons
+## Host controls on Ubuntu
 
 The right-hand column has four buttons (built from `commands.json`), and
 the **left half** of the window is split 50/50 (drag the divider to
 change it): the terminal on top, and below it the small
 **Background command log** — every command the app runs remotely, and
-its full output, is appended there with a timestamp. The buttons
+its output, is appended there with a timestamp. The on-screen log keeps
+the most recent 5,000 lines, up to 512,000 characters. Clear **Follow log**
+to read older entries while output arrives. Select it again to jump to the latest entry. The buttons
 themselves never freeze the window — the ssh commands run in background
 threads and reuse the master connection
 (`ssh -o ControlPath=<socket> rock@<ip> "<command>"`), so no password is
@@ -201,9 +245,9 @@ in the drone's home directory and logs the result.
 - Only when the container is verified stopped, the app runs
   `sudo -S -p '' shutdown now`, sending the login password through the
   ssh process's standard input (never in the command text, never in the
-  log). The connection dropping afterwards is expected — you'll see
-  "Shutdown sent, connection closed" and all drone buttons become
-  disabled, since the drone is off.
+  log). If SSH acknowledges the command, the controls are disabled.
+  If the connection drops before SSH returns success, the GUI reports that
+  shutdown could not be confirmed.
 
 ### dry_run (default ON)
 With `"dry_run": true` in `config.json`, everything above happens
@@ -212,7 +256,7 @@ normally (stopping the container, verification) **except** the final
 Set `"dry_run": false` in `config.json` only when you really want the
 drone to shut down from the app.
 
-## 6. Stage 3: container shell and ROS buttons
+## Container shell and ROS controls on Ubuntu
 
 The right side of the window has **two button columns** to keep things
 tidy: *Host commands* (docker, container start/stop, shutdown, and the
@@ -246,29 +290,19 @@ buttons. In the separate echo windows, press Ctrl+C directly in that
 window's terminal instead.
 
 ### List available topics
-Types `ros2 topic list` **into the terminal** — the same place where you
-are inside the container and `ros2` is available — and then **waits until
-the command has really finished** (the app types a small marker line
-after the command and polls the terminal screen until the marker
-appears, for up to 30 seconds). Because it waits for the *actual answer*
-instead of a fixed number of seconds, this works the same on fast and
-slow PCs and networks — the first call still starts the ROS daemon and
-can be slow. When the topics are printed they appear in the list below;
-**click one** to select it. If nothing is found (e.g. the nodes are
-still starting), the log tells you and you can simply click the button
-again.
-
-This works on both tested Ubuntu versions: on Ubuntu 24.04 the app
-reads the terminal with the modern VTE function, on Ubuntu 22.04 it
-automatically falls back to the older one that version ships — before
-this fix, the topic list stayed empty on Ubuntu 22. If **fewer topics
-appear in the terminal itself** than expected, that is not a GUI
-problem: the command runs on the drone, so a short list usually means
-the ROS nodes were still starting — wait a moment and click the button
-again.
+Reads the configured topic list command in a separate interactive Bash inside
+the configured container, using the existing SSH master connection. Results
+come from that command's output, so terminal width, scrollback and the VTE
+version do not affect the list. The main terminal stays available while the
+request runs. A refresh replaces the old list and selection. If the container
+is still starting, refresh again after its nodes have come up.
+Type part of a name into **Filter topics by name** to search the current list
+without sending another SSH request.
 
 ### Echo selected topic
-Types `ros2 topic echo <the topic you clicked>` into the terminal.
+
+Select a topic with the mouse or keyboard, then click **Echo selected topic**
+to open a dedicated echo terminal for it.
 
 ### The fixed ROS buttons
 Each types its fixed command into the terminal (definitions live in
@@ -295,15 +329,12 @@ has its own window, you can echo **several topics at the same time**.
 Close a window (or press Ctrl+C inside it) to stop that echo. The `hz`
 commands keep running in the main terminal as before.
 
-## 7. Current status
+## Run the offline checks
 
-- [x] **Stage 1** — start window, connection check with plain-English
-      errors, main window with the always-visible SSH terminal.
-- [x] **Stage 2** — host buttons: check containers (list in the GUI),
-      start/stop the Fast-LIO container safely, two-step shutdown
-      (with `dry_run` on), plus the background command log under the
-      terminal.
-- [x] **Stage 3** — container shell entry/exit with safety flag, ROS
-      topic list (clickable), echo/hz buttons.
-
-All three stages are complete.
+From the repository root, run `python -B -m unittest discover -s tests -v`.
+On Ubuntu, use the system Python with a display, or run
+`xvfb-run -a /usr/bin/python3 -B -m unittest discover -s tests -v`.
+GitHub Actions runs the Windows GUI tests and exercises GTK on Ubuntu 22.04 and
+24.04. Inside each disposable Linux container, a separate integration test uses
+a loopback SSH server to check login, reuse of the master connection, and
+disconnect handling. Local test discovery skips this fixture automatically.
