@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 
-from diagnostics import (CONTAINER_LIST, export_csv, load_commands, load_config,
+from diagnostics import (CONTAINER_LIST, CommandConfigError, export_csv, load_commands, load_config,
                          save_endpoint, topic_list_command, topic_names)
 
 
@@ -64,7 +64,7 @@ def make_dot_button(dot_color, text):
     button = Gtk.Button()
     label = Gtk.Label()
     label.set_markup(
-        '<span foreground="' + dot_color + '">&#9679;</span> ' + text)
+        '<span foreground="' + dot_color + '">&#9679;</span> ' + GLib.markup_escape_text(text))
     button.add(label)
     return button
 
@@ -77,7 +77,7 @@ def make_emoji_button(prefix, text):
     """
     button = Gtk.Button()
     label = Gtk.Label()
-    label.set_markup(prefix + " " + text)
+    label.set_text(prefix + " " + text)
     button.add(label)
     return button
 
@@ -122,7 +122,7 @@ def explain_ssh_error(returncode, output, ip, user):
 
     if returncode == 5 or "permission denied" in text:
         return ("Login failed: the password (or the user name) is wrong.\n"
-                "Check the password and the user in config.json, then try again.")
+                "Check the user name and password in the login window, then try again.")
     if "connection refused" in text:
         return ("The drone answered at " + ip + ", but nothing is listening "
                 "on SSH port 22.\nThe SSH server on the drone may not be running.")
@@ -515,7 +515,13 @@ class OmniQuadApp:
 
         # -- LOG AREA: every background command and its output lands here.
         # It sits directly under the terminal in the lower half.
-        log_frame = Gtk.Frame(label="Background command log")
+        log_frame = Gtk.Frame()
+        log_header = Gtk.Box(spacing=12)
+        log_header.add(Gtk.Label(label="Background command log"))
+        follow = Gtk.CheckButton(label="Follow log")
+        follow.set_active(True)
+        log_header.add(follow)
+        log_frame.set_label_widget(log_header)
         log_scrolled = Gtk.ScrolledWindow()
         log_scrolled.set_policy(
             Gtk.PolicyType.AUTOMATIC,
@@ -530,12 +536,20 @@ class OmniQuadApp:
         self.log_textview.set_monospace(True)
         self.log_buffer = self.log_textview.get_buffer()
         log_scrolled.add(self.log_textview)
+        adjustment = log_scrolled.get_vadjustment()
+        def scroll_to_latest(*args):
+            if follow.get_active():
+                adjustment.set_value(max(adjustment.get_lower(), adjustment.get_upper() - adjustment.get_page_size()))
+        adjustment.connect("changed", scroll_to_latest)
+        follow.connect("toggled", scroll_to_latest)
         log_frame.add(log_scrolled)
         left_pane.pack2(log_frame, True, False)
 
         # Put the divider in the middle (50/50) once the window has its
         # real size.  GLib.idle_add runs it after the window is shown.
         def split_left_half():
+            if self.closed:
+                return False
             height = window.get_allocated_height()
             if height > 0:
                 left_pane.set_position(height // 2)
@@ -755,7 +769,6 @@ class OmniQuadApp:
         excess_lines = buffer.get_line_count() - MAX_LOG_LINES
         if excess_lines > 0:
             buffer.delete(buffer.get_start_iter(), buffer.get_iter_at_line(excess_lines))
-        self.log_textview.scroll_to_iter(buffer.get_end_iter(), 0.0, False, 0.0, 1.0)
 
     # ------------------------------------------------------------------
     # The right-hand button panel
@@ -1119,8 +1132,7 @@ class OmniQuadApp:
         self.clear_container_list()
 
         if not success:
-            self.container_running = None
-            self.update_shell_button_state()
+            self.set_container_state(None)
         if not success and "permission denied" in output.lower():
             self.append_log(
                 "Permission denied: the user '"
@@ -1140,8 +1152,7 @@ class OmniQuadApp:
         lines = [line for line in output.splitlines() if line.strip()]
         if not lines:
             self.append_log("No containers are running right now.")
-            self.container_running = False
-            self.update_shell_button_state()
+            self.set_container_state(False)
             return
         for line in lines:
             if "|" in line:
@@ -1152,9 +1163,20 @@ class OmniQuadApp:
         # Remember whether OUR container is among them: this decides
         # whether "Enter PX4 bridge container" may be used.
         names = [line.split("|", 1)[0].strip() for line in lines]
-        self.container_running = (
-            self.commands["container_name"] in names)
+        self.set_container_state(self.commands["container_name"] in names)
+
+    def set_container_state(self, running):
+        self.container_running = running
+        if running is False and self.inside_container_shell:
+            self.clear_shell_state()
         self.update_shell_button_state()
+
+    def clear_shell_state(self):
+        self.inside_container_shell = False
+        self.topics_request = None
+        self.topics_spinner.stop()
+        self.topics_spinner.hide()
+        self.clear_topic_list()
 
     def clear_container_list(self):
         """Remove all rows from the container list display."""
@@ -1210,6 +1232,7 @@ class OmniQuadApp:
     def stop_check_done(self, success, returncode, output):
         """Step 1: is the container running at all?"""
         name = self.commands["container_name"]
+        self.set_container_state(name in output.splitlines() if success else None)
         if not success:
             self.append_log(
                 "Could not check the container state (docker ps failed). "
@@ -1252,9 +1275,7 @@ class OmniQuadApp:
         name = self.commands["container_name"]
         self.set_drone_buttons_enabled(True)
         # Update the running state from the verification result.
-        self.container_running = (
-            success and name in output.splitlines())
-        self.update_shell_button_state()
+        self.set_container_state(name in output.splitlines() if success else None)
         if not success:
             self.append_log(
                 "WARNING: could not verify the container state "
@@ -1286,11 +1307,7 @@ class OmniQuadApp:
                 return False
             if not self.demo_mode:
                 self.terminal.feed_child(b"exit\n")
-            self.inside_container_shell = False
-            self.topics_request = None
-            self.topics_spinner.stop()
-            self.topics_spinner.hide()
-            self.clear_topic_list()
+            self.clear_shell_state()
             self.update_shell_button_state()   # ROS buttons off again
             on_left()
             return False   # tells GLib.timeout_add: do not call me again
@@ -1341,9 +1358,7 @@ class OmniQuadApp:
 
         # Update the running state from the verification result, then
         # decide: abort if the check failed OR the container is still up.
-        self.container_running = (
-            success and name in output.splitlines())
-        self.update_shell_button_state()
+        self.set_container_state(name in output.splitlines() if success else None)
         still_running = (not success) or (name in output.splitlines())
         if still_running:
             message = ("SHUTDOWN ABORTED. Could NOT confirm that the "
@@ -1814,12 +1829,16 @@ def main(demo=False):
                 GLib.source_remove(interrupt)
             if not app.reconnect_requested:
                 break
-    except Exception:
+    except Exception as error:
         # A programming error should never just vanish (especially when
         # the app is started from a desktop icon, where there is no
         # console to print to).  Show it in a window instead.
         import traceback
+        title = "OmniQuadGUI stopped unexpectedly"
         text = traceback.format_exc()
+        if isinstance(error, CommandConfigError):
+            title = "Check the command configuration"
+            text = str(error)
         print(text)  # also visible if the app was started from a terminal
         try:
             dialog = Gtk.MessageDialog(
@@ -1827,12 +1846,9 @@ def main(demo=False):
                 flags=Gtk.DialogFlags.MODAL,
                 message_type=Gtk.MessageType.ERROR,
                 buttons=Gtk.ButtonsType.OK,
-                text="OmniQuadGUI stopped unexpectedly",
+                text=title,
             )
-            dialog.format_secondary_text(
-                "Please report this text to whoever maintains the app:\n\n"
-                + text[-1500:]
-            )
+            dialog.format_secondary_text(text[-1500:])
             dialog.run()
             dialog.destroy()
         except Exception:

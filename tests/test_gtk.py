@@ -7,6 +7,42 @@ from unittest.mock import patch
 
 @unittest.skipUnless(sys.platform.startswith("linux") and os.getenv("DISPLAY"), "GTK display required")
 class GtkDemoTests(unittest.TestCase):
+    @staticmethod
+    def close_app(app):
+        if not app.closed:
+            with patch("gtk_app.Gtk.main_quit"):
+                app.on_main_window_closed(app.main_window, None)
+        app.main_window.destroy()
+
+    def test_external_stop_invalidates_shell_and_pending_topics(self):
+        from gtk_app import OmniQuadApp
+        app = OmniQuadApp(demo=True)
+        self.addCleanup(self.close_app, app)
+        app.on_enter_container(None)
+        with patch.object(app, "run_ssh_background") as remote:
+            app.on_list_topics(None)
+            receive = remote.call_args.args[1]
+        app.on_containers_result(True, 0, "other|Up\n")
+        receive(True, 0, "/obsolete\n")
+        self.assertFalse(app.inside_container_shell)
+        self.assertFalse(app.list_topics_button.get_sensitive())
+        self.assertFalse(app.enter_container_button.get_sensitive())
+        self.assertFalse(app.topics_listbox.get_children())
+
+    def test_shutdown_requires_a_successful_check_and_explicit_live_setting(self):
+        from gtk_app import OmniQuadApp
+        app = OmniQuadApp(demo=True)
+        self.addCleanup(self.close_app, app)
+        with patch.object(app, "run_shutdown_ssh") as shutdown, patch.object(app, "show_loud_warning") as warning:
+            app.config["dry_run"] = False
+            app.shutdown_verify_done(False, 1, "")
+            app.shutdown_verify_done(True, 0, app.commands["container_name"])
+            self.assertEqual(warning.call_count, 2)
+            shutdown.assert_not_called()
+            app.config["dry_run"] = True
+            app.shutdown_verify_done(True, 0, "")
+            shutdown.assert_not_called()
+
     def test_reconnect_opens_a_fresh_login(self):
         import gtk_app
         sessions = []
@@ -51,7 +87,7 @@ class GtkDemoTests(unittest.TestCase):
         app.connect_button.clicked()
         wait_for(lambda: app.main_window is not None and app.controls.get_sensitive())
         self.assertTrue(os.path.exists(app.control_socket))
-        self.addCleanup(app.main_window.destroy)
+        self.addCleanup(self.close_app, app)
         answer = []
         command = "printf '%s' \"$SSH_CONNECTION\""
         app.run_ssh_background(command, lambda *args: answer.append(args))
@@ -84,7 +120,7 @@ class GtkDemoTests(unittest.TestCase):
             app.user_entry.set_text(app.config["demo_user"])
             app.password_entry.set_text(app.config["demo_password"])
             app.connect_button.clicked()
-            self.addCleanup(app.main_window.destroy)
+            self.addCleanup(self.close_app, app)
             until(lambda: len(app.container_listbox.get_children()) == 1)
             app.enter_container_button.clicked()
             app.list_topics_button.clicked()

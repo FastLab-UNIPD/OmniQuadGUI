@@ -10,6 +10,13 @@ with the battery disconnected or rotors removed.
 
 ---
 
+| Desktop capability | Windows | Ubuntu 22.04 / 24.04 |
+| --- | --- | --- |
+| Offline demo, list containers and ROS topics, filter and export CSV | Yes | Yes |
+| Interactive SSH | Separate OpenSSH terminal | Embedded VTE terminal |
+| Authentication for background queries | Existing SSH key or agent | Reuses the logged-in master connection |
+| Container lifecycle, echo windows and shutdown controls | Via manual SSH commands | Dedicated GUI controls |
+
 ## Windows with an existing Conda environment
 
 From the repository folder in your activated Conda prompt, run:
@@ -34,7 +41,7 @@ If you use password authentication, you can run commands in the interactive
 terminal. Container start/stop, the embedded terminal and shutdown controls
 are available in the Ubuntu interface.
 
-## 1. Install on Ubuntu (once)
+## Install on Ubuntu
 
 On a fresh Ubuntu desktop (tested style: 22.04 / 24.04), open a normal
 terminal and run:
@@ -69,7 +76,7 @@ touches.
 On the drone side, SSH must be enabled and the user (default `rock`) must be
 allowed to log in with a password.
 
-## 2. Run on Ubuntu
+## Run on Ubuntu
 
 ```bash
 cd OmniQuadGUI
@@ -121,7 +128,7 @@ After an Ubuntu SSH disconnect, the terminal and last results stay visible.
 Choose **Reconnect** to return to the login window. **Export containers CSV**
 and **Export topics CSV** save the displayed rows, including after disconnect.
 
-## 3. Files in this folder
+## Files and configuration
 
 | File              | Purpose                                                        |
 |-------------------|----------------------------------------------------------------|
@@ -158,7 +165,7 @@ and **Export topics CSV** save the displayed rows, including after disconnect.
   (no drone connection, simulated answers). Not a security feature —
   just a preview mode.
 
-## 4. How the SSH connection works (why there is only one password prompt)
+## How SSH works on Ubuntu
 
 1. When you click **Connect**, the app first runs a quick non-interactive
    check: `sshpass -e ssh rock@<ip> echo ok`.
@@ -174,7 +181,7 @@ and **Export topics CSV** save the displayed rows, including after disconnect.
      **master connection**. It stays open as long as the app window is open.
    - Because the check already verified the password, this session logs in
      silently — no second password prompt.
-3. In stage 2, every button that needs to *read* something from the drone
+3. Every button that needs to *read* something from the drone
    (container lists, safety checks) runs its own short, non-interactive
    `ssh -o ControlPath=<socket> rock@<ip> "<command>"`. That reuses the
    master connection through the socket file, so **no password is needed
@@ -188,14 +195,15 @@ and **Export topics CSV** save the displayed rows, including after disconnect.
 The terminal itself always stays visible: buttons that you "watch live"
 simply type their command into that terminal, exactly as if you had typed it.
 
-## 5. Stage 2: the host buttons
+## Host controls on Ubuntu
 
 The right-hand column has four buttons (built from `commands.json`), and
 the **left half** of the window is split 50/50 (drag the divider to
 change it): the terminal on top, and below it the small
 **Background command log** — every command the app runs remotely, and
 its output, is appended there with a timestamp. The on-screen log keeps
-the most recent 5,000 lines, up to 512,000 characters. The buttons
+the most recent 5,000 lines, up to 512,000 characters. Clear **Follow log**
+to read older entries while output arrives. Select it again to jump to the latest entry. The buttons
 themselves never freeze the window — the ssh commands run in background
 threads and reuse the master connection
 (`ssh -o ControlPath=<socket> rock@<ip> "<command>"`), so no password is
@@ -248,7 +256,7 @@ normally (stopping the container, verification) **except** the final
 Set `"dry_run": false` in `config.json` only when you really want the
 drone to shut down from the app.
 
-## 6. Stage 3: container shell and ROS buttons
+## Container shell and ROS controls on Ubuntu
 
 The right side of the window has **two button columns** to keep things
 tidy: *Host commands* (docker, container start/stop, shutdown, and the
@@ -320,20 +328,6 @@ enters the container and starts the echo inside it. Because each echo
 has its own window, you can echo **several topics at the same time**.
 Close a window (or press Ctrl+C inside it) to stop that echo. The `hz`
 commands keep running in the main terminal as before.
-
-## 7. Current status
-
-- [x] **Stage 1** — start window, connection check with plain-English
-      errors, main window with the always-visible SSH terminal.
-- [x] **Stage 2** — host buttons: check containers (list in the GUI),
-      start/stop the Fast-LIO container safely, two-step shutdown
-      (with `dry_run` on), plus the background command log under the
-      terminal.
-- [x] **Stage 3** — container shell entry/exit with safety flag, ROS
-      topic list (clickable), echo/hz buttons.
-
-All three stages are complete.
-
 
 ## Run the offline checks
 

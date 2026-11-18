@@ -74,23 +74,28 @@ def export_csv(path, columns, rows):
                              else cell for cell in row])
 
 
+class CommandConfigError(ValueError):
+    """An action in commands.json cannot be loaded."""
+
+
 def load_commands(path=COMMANDS_FILE):
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise ValueError(f"Could not read {path.name}: {error}") from error
-    if not isinstance(config, dict) or not isinstance(config.get("container_name"), str) or not config["container_name"].strip():
-        raise ValueError("commands.json requires a non-empty container_name.")
+        raise CommandConfigError(f"Could not read {path.name}: {error}") from error
+    container = config.get("container_name") if isinstance(config, dict) else None
+    if not isinstance(container, str) or not container.strip():
+        raise CommandConfigError("commands.json requires a non-empty container_name.")
     for group in ("host_buttons", "terminal_buttons"):
         if not isinstance(config.get(group), list):
-            raise ValueError(f"commands.json requires a {group} list.")
+            raise CommandConfigError(f"commands.json requires a {group} list.")
         for index, item in enumerate(config[group]):
             if not isinstance(item, dict) or any(
                 not isinstance(item.get(key), str) or not item[key].strip() for key in ("action", "label")
             ):
-                raise ValueError(f"commands.json: {group}[{index}] requires a label and an action.")
+                raise CommandConfigError(f"commands.json: {group}[{index}] requires a label and an action.")
             if "command" in item and not isinstance(item["command"], str):
-                raise ValueError(f"commands.json: {group}[{index}].command must be text.")
+                raise CommandConfigError(f"commands.json: {group}[{index}].command must be text.")
     return config
 
 
