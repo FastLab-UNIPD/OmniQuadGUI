@@ -16,18 +16,9 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates git python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 xvfb xauth openssh-server sshpass
+            ca-certificates git python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 librsvg2-common xvfb xauth openssh-server sshpass
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Exercise GTK and the SSH client against loopback
         run: sh tests/ci-loopback.sh
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise the native Windows interface
-        run: python -B -m unittest discover -s tests -v

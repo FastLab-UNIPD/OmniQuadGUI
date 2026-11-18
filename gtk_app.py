@@ -20,6 +20,11 @@ gi.require_version("Gtk", "3.0")      # make sure we get GTK 3, not GTK 4
 gi.require_version("Vte", "2.91")     # the VTE version Ubuntu ships for GTK 3
 from gi.repository import Gtk, GLib, Vte, Pango, Gdk, GdkPixbuf
 
+# Colours, icons, button styles and the rotor loading animation.
+from ui_theme import (GREEN_COLOR, RED_COLOR, BridgeStatus, ConnectionStatus, RotorSpinner, apply_theme,
+                      load_icon, make_button, make_card, make_column_title, style_terminal,
+                      style_window)
+
 
 # ----------------------------------------------------------------------------
 # Constants and small helpers
@@ -28,11 +33,14 @@ from gi.repository import Gtk, GLib, Vte, Pango, Gdk, GdkPixbuf
 # Where this script lives, so config.json is always found even if the
 # app is started from another folder.
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGO_FILE = os.path.join(APP_DIR, "omniquadgui.png")   # app logo
+LOGO_FILE = os.path.join(APP_DIR, "images", "omniquadgui.png")   # app logo
 
 # How long (seconds) the quick connection check may take before we give
 # up and report "cannot reach the drone".
 CONNECT_TIMEOUT_SECONDS = 10
+# While connected, the header bar's status dot is refreshed this often
+# (seconds) with a tiny "are you still there?" command to the drone.
+STATUS_CHECK_SECONDS = 5
 MAX_LOG_LINES = 5000
 MAX_LOG_CHARS = 512_000
 
@@ -55,18 +63,35 @@ def build_ssh_argv(user, ip, extra_options=(), remote_command=None):
     return argv
 
 
-def fit_window_to_content(window, min_width, min_height):
+def feed_text(terminal, text):
+    """Print our own message text into a VTE terminal.
+
+    A terminal needs "\r\n" (back to the start of the line + new line);
+    a bare "\n" only moves DOWN, so every line would start where the
+    previous one ended (a "staircase" of text).
+    """
+    terminal.feed(text.replace("\r\n", "\n").replace("\n", "\r\n").encode())
+
+
+def fit_window_to_content(window, min_width, min_height, parts):
     """Give `window` a starting size that shows ALL of its contents.
 
     GTK can tell how much room the widgets inside the window would like
-    ("natural size").  We open the window at least that big (and at least
-    min_width x min_height), but never larger than the usable part of
-    the screen (the "work area": the screen minus top bar / dock).
+    ("natural size").  `parts` are the widgets stacked from top to
+    bottom in the window (header bar, then the content), and we add
+    up their sizes.  (We cannot ask the window itself: with a header
+    bar, GTK only knows the window's size after it is on screen.)
+    The window opens at least that big (and at least min_width x
+    min_height), but never larger than the usable part of the screen
+    (the "work area": the screen minus top bar / dock).
     Call this after all widgets were added, before window.show_all().
     """
-    minimum, natural = window.get_preferred_size()
-    width = max(min_width, natural.width)
-    height = max(min_height, natural.height)
+    sizes = [part.get_preferred_size() for part in parts]
+    minimum = Gtk.Requisition()
+    minimum.width = max(size[0].width for size in sizes)
+    minimum.height = sum(size[0].height for size in sizes)
+    width = max(min_width, max(size[1].width for size in sizes))
+    height = max(min_height, sum(size[1].height for size in sizes))
 
     display = Gdk.Display.get_default()
     monitor = None
@@ -85,61 +110,53 @@ def fit_window_to_content(window, min_width, min_height):
     return width, height
 
 
-def make_dot_button(dot_color, text):
-    """A button whose label starts with a coloured dot (●).
+def describe_network(ip):
+    """Which network does this PC use to reach `ip`?  (any thread)
 
-    The dot is a coloured character inside the label, done with Pango
-    markup.  Example: a green dot before "Start Fast-LIO container".
+    Returns (short, details), for example:
+        ("Wi-Fi: LabNet", "Interface wlp4s0 · this PC 192.168.1.40")
+    1. `ip route get <ip>` tells which network interface (wlp4s0, eth0,
+       ...) the packets leave through, and this PC's own address there.
+    2. NetworkManager (`nmcli`) knows that interface's connection name
+       (the Wi-Fi name, or e.g. "Wired connection 1").
+    Every step is optional: if a tool is missing we show what we know.
     """
-    button = Gtk.Button()
-    label = Gtk.Label()
-    label.set_markup(
-        '<span foreground="' + dot_color + '">&#9679;</span> ' + GLib.markup_escape_text(text))
-    button.add(label)
-    return button
+    device = ""
+    local_ip = ""
+    try:
+        route = subprocess.run(["ip", "route", "get", ip], capture_output=True,
+                               text=True, timeout=3).stdout.split()
+        # Output looks like: "192.168.1.50 dev wlp4s0 src 192.168.1.40 ..."
+        if "dev" in route:
+            device = route[route.index("dev") + 1]
+        if "src" in route:
+            local_ip = route[route.index("src") + 1]
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        pass
+    if not device:
+        return "network unknown", "Could not find a network route to " + ip
 
-
-def make_emoji_button(prefix, text):
-    """A button whose label starts with an emoji (e.g. a whale or skull).
-
-    `prefix` is a short string such as "\N{SPOUTING WHALE}".  The emoji
-    comes from the system emoji font, so no colour markup is needed.
-    """
-    button = Gtk.Button()
-    label = Gtk.Label()
-    label.set_text(prefix + " " + text)
-    button.add(label)
-    return button
-
-
-def load_button_styles():
-    """Register a few small CSS styles used by the buttons.
-
-    The shutdown button gets a red background with white text (the same
-    red family as GTK's destructive-action style, which the "Confirm
-    shutdown" button uses).  The white "color" is the TEXT colour; the
-    red only paints the background, never the text itself.
-    """
-    css = b"""
-    .warm-action {
-        background-color: #e01b24;
-        color: #ffffff;
-    }
-    .warm-action:hover {
-        background-color: #c81e26;
-    }
-    .big-stop-button {
-        font-size: 15px;
-        padding: 12px;
-    }
-    """
-    provider = Gtk.CssProvider()
-    provider.load_from_data(css)
-    Gtk.StyleContext.add_provider_for_screen(
-        Gdk.Screen.get_default(),
-        provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-    )
+    kind = ""
+    name = ""
+    try:
+        lines = subprocess.run(
+            ["nmcli", "-g", "GENERAL.TYPE,GENERAL.CONNECTION", "device", "show", device],
+            capture_output=True, text=True, timeout=3).stdout.splitlines()
+        if len(lines) >= 2:
+            kind, name = lines[0].strip(), lines[1].strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    kind_text = {"wifi": "Wi-Fi", "ethernet": "Ethernet"}.get(kind, kind or device)
+    if device == "lo":
+        short = "this computer"
+    elif name:
+        short = kind_text + ": " + name
+    else:
+        short = kind_text
+    details = "Interface " + device
+    if local_ip:
+        details += " · this PC " + local_ip
+    return short, details
 
 
 def explain_ssh_error(returncode, output, ip, user):
@@ -214,7 +231,6 @@ class OmniQuadApp:
         self.shutdown_confirm_box = None
         self.log_textview = None
         self.log_buffer = None
-        self.container_listbox = None
         # Set to True once "sudo shutdown" was really sent, so the
         # "connection lost" message in the terminal stays calm.
         self.session_ended = False
@@ -248,8 +264,9 @@ class OmniQuadApp:
     def show_start_window(self):
         """The first window: ask for the drone IP and the password."""
         window = Gtk.Window(title="OmniQuadGUI - connect to drone")
-        window.set_border_width(12)
-        window.set_default_size(430, 260)
+        style_window(window)          # dark app look (see ui_theme.py)
+        window.set_border_width(20)
+        window.set_default_size(440, 260)
         window.connect("destroy", Gtk.main_quit)
         self.start_window = window
 
@@ -266,61 +283,77 @@ class OmniQuadApp:
             logo_image.set_from_pixbuf(logo_pixbuf)
         except GLib.Error:
             pass  # Keep the login form available if the logo cannot be loaded.
-        logo_image.set_opacity(0.2)      # very light: background only
+        logo_image.set_opacity(0.12)     # very light: background only
         logo_image.set_halign(Gtk.Align.CENTER)
         logo_image.set_valign(Gtk.Align.CENTER)
         overlay.add(logo_image)          # bottom layer
 
-        # A vertical box: one row per input field.
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        # A vertical box: title, the input fields, then the buttons.
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         overlay.add_overlay(vbox)        # drawn on top of the logo
 
-        vbox.add(Gtk.Label(label="Connect to the drone's onboard computer (SSH)"))
+        vbox.pack_start(make_column_title(
+            "OmniQuadGUI", "Connect to the drone's onboard computer (SSH)"),
+            False, False, 0)
+
+        # The three fields sit in a grid, so the labels on the left and
+        # the text boxes on the right line up exactly.  Each text box
+        # shows a small icon at its left edge.
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+        grid.set_margin_top(6)
+        vbox.pack_start(grid, False, False, 0)
+
+        def add_field_row(row, text, icon_name):
+            label = Gtk.Label(label=text)
+            label.set_xalign(0.0)
+            label.get_style_context().add_class("oq-dim")
+            entry = Gtk.Entry()
+            entry.set_hexpand(True)
+            icon = load_icon(icon_name, 16, "#8d98ab")
+            if icon is not None:
+                entry.set_icon_from_gicon(Gtk.EntryIconPosition.PRIMARY, icon.props.gicon)
+            entry.connect("activate", self.on_connect_clicked)
+            grid.attach(label, 0, row, 1, 1)
+            grid.attach(entry, 1, row, 1, 1)
+            return entry
 
         # -- user row --
-        hbox_user = Gtk.Box(spacing=8)
-        hbox_user.add(Gtk.Label(label="User:"))
-        self.user_entry = Gtk.Entry()
+        self.user_entry = add_field_row(0, "User", "user")
         self.user_entry.set_text(self.config["user"])  # default: rock
-        self.user_entry.connect("activate", self.on_connect_clicked)
-        hbox_user.pack_start(self.user_entry, True, True, 0)
-        vbox.add(hbox_user)
 
-        # -- IP row --
-        hbox_ip = Gtk.Box(spacing=8)
-        hbox_ip.add(Gtk.Label(label="Drone IP:"))
-        self.ip_entry = Gtk.Entry()
+        # -- IP row --  (Enter in any field acts like clicking Connect)
+        self.ip_entry = add_field_row(1, "Drone IP", "globe")
         self.ip_entry.set_text(self.config["ip"])      # remembered last time
         self.ip_entry.set_placeholder_text("e.g. 192.168.1.50")
-        # Pressing Enter in the IP field acts like clicking Connect.
-        self.ip_entry.connect("activate", self.on_connect_clicked)
-        hbox_ip.pack_start(self.ip_entry, True, True, 0)
-        vbox.add(hbox_ip)
 
         # -- password row --
-        hbox_pw = Gtk.Box(spacing=8)
-        hbox_pw.add(Gtk.Label(label="Password:"))
-        self.password_entry = Gtk.Entry()
+        self.password_entry = add_field_row(2, "Password", "lock")
         self.password_entry.set_visibility(False)      # mask the characters
-        self.password_entry.connect("activate", self.on_connect_clicked)
-        hbox_pw.pack_start(self.password_entry, True, True, 0)
-        vbox.add(hbox_pw)
 
         # -- Connect button --
-        self.connect_button = Gtk.Button(label="Connect")
+        self.connect_button = make_button(
+            "Connect", icon="connect", style="primary", centered=True)
+        self.connect_button.set_margin_top(6)
         self.connect_button.connect("clicked", self.on_connect_clicked)
-        vbox.add(self.connect_button)
+        vbox.pack_start(self.connect_button, False, False, 0)
 
-        # -- status / error label --
+        # -- status / error label, with the rotor while connecting --
         # Wraps and can grow tall, so plain-English error messages fit.
+        status_row = Gtk.Box(spacing=8)
+        self.connect_spinner = RotorSpinner()
+        self.connect_spinner.set_valign(Gtk.Align.START)
+        self.connect_spinner.set_no_show_all(True)   # visible only while connecting
+        status_row.pack_start(self.connect_spinner, False, False, 0)
         self.status_label = Gtk.Label(label="")
         self.status_label.set_line_wrap(True)
         self.status_label.set_xalign(0.0)  # left-aligned text
-        vbox.add(self.status_label)
+        status_row.pack_start(self.status_label, True, True, 0)
+        vbox.pack_start(status_row, False, False, 0)
 
-        self.demo_button = Gtk.Button(label="Open offline demo")
+        self.demo_button = make_button(
+            "Open offline demo", icon="demo", centered=True)
         self.demo_button.connect("clicked", lambda button: self.open_demo())
-        vbox.add(self.demo_button)
+        vbox.pack_start(self.demo_button, False, False, 0)
 
         # A Gtk.Overlay only asks for the size of its BOTTOM child (the
         # logo), never for the form drawn on top of it.  Without help the
@@ -382,6 +415,8 @@ class OmniQuadApp:
         self.connect_button.set_sensitive(False)
         self.demo_button.set_sensitive(False)
         self.status_label.set_text("Connecting to " + user + "@" + ip + " ...")
+        self.connect_spinner.show()
+        self.connect_spinner.start()
 
         # Start the background check.  The password is handed to the
         # thread as a normal function argument and never leaves memory.
@@ -457,6 +492,8 @@ class OmniQuadApp:
 
     def on_connect_finished(self, ip, user, password, success, message):
         """MAIN THREAD: the background check is done; continue here."""
+        self.connect_spinner.stop()
+        self.connect_spinner.hide()
         if not success:
             # Re-enable the button and show the plain-English error.
             self.connect_button.set_sensitive(True)
@@ -509,63 +546,101 @@ class OmniQuadApp:
             title = "OmniQuadGUI - " + user + "@" + ip
 
         window = Gtk.Window(title=title)
+        style_window(window)          # dark app look (see ui_theme.py)
         # The starting size is chosen later (fit_window_to_content), once
         # all the buttons exist and GTK knows how much room they need.
         window.connect("delete-event", self.on_main_window_closed)
+
+        # ---- Header bar (the window's title bar) -----------------------
+        # Shows the app name and, on the right, a thin connection strip:
+        # a green/amber/red dot, who we are connected to, and the network
+        # this PC uses to reach the drone (see ConnectionStatus).
+        header = Gtk.HeaderBar()
+        header.set_show_close_button(True)
+        header.set_title("OmniQuadGUI")
+        try:
+            header_logo = Gtk.Image.new_from_pixbuf(
+                GdkPixbuf.Pixbuf.new_from_file_at_scale(LOGO_FILE, 26, 26, True))
+            header.pack_start(header_logo)
+        except GLib.Error:
+            pass   # no logo: the header bar simply has none
+        self.connection_status = ConnectionStatus()
+        self.status_check_running = False
+        if self.demo_mode:
+            self.connection_status.set_state("waiting", "Demo")
+            self.connection_status.set_target(user + " (simulated)")
+            self.connection_status.set_network(
+                "no network used", "Offline demo: nothing connects to a drone.")
+        else:
+            self.connection_status.set_state("waiting", "Connecting…")
+            self.connection_status.set_target(user + "@" + ip)
+            self.connection_status.set_network("…")
+            self.refresh_network_info()
+        header.pack_end(self.connection_status)
+        window.set_titlebar(header)
 
         # A Paned widget splits the window into two resizable parts.
         pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         window.add(layout)
         layout.pack_start(pane, True, True, 0)
-        footer = Gtk.Box(spacing=6)
-        footer.set_border_width(6)
+
+        # ---- Footer bar: CSV export on the left, Reconnect on the right
+        footer = Gtk.ActionBar()
         layout.pack_end(footer, False, False, 0)
-        for kind in ("containers", "topics"):
-            button = Gtk.Button(label="Export " + kind + " CSV…")
-            button.connect("clicked", self.on_export_csv, kind)
-            footer.pack_start(button, False, False, 0)
-        self.reconnect_button = Gtk.Button(label="Reconnect…")
+        export_button = make_button("Export topics CSV…", icon="export")
+        export_button.connect("clicked", self.on_export_csv, "topics")
+        footer.pack_start(export_button)
+        self.reconnect_button = make_button(
+            "Reconnect…", icon="reconnect", style="primary")
         self.reconnect_button.set_no_show_all(True)
         self.reconnect_button.connect("clicked", self.on_reconnect)
-        footer.pack_end(self.reconnect_button, False, False, 0)
+        footer.pack_end(self.reconnect_button)
 
         # -- LEFT: a vertical split: terminal on top, log area below -----
         # Paned = a divider the user can drag; it starts at 50/50.
         left_pane = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        pane.add1(left_pane)
+        left_pane.set_margin_start(10)
+        left_pane.set_margin_top(10)
+        left_pane.set_margin_bottom(10)
+        # resize=True: extra window width goes to the terminal side;
+        # shrink=False: the terminal side is never cut off.
+        pane.pack1(left_pane, True, False)
 
+        terminal_card, terminal_body = make_card("Drone terminal", icon="terminal")
+        terminal_card.set_margin_bottom(4)
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(
             Gtk.PolicyType.AUTOMATIC,   # horizontal scrollbar if needed
             Gtk.PolicyType.ALWAYS,      # vertical scrollbar (always useful)
         )
         scrolled.set_size_request(240, -1)
+        terminal_body.pack_start(scrolled, True, True, 0)
         # resize=True: the terminal pane grows/shrinks with the window.
-        left_pane.pack1(scrolled, True, False)
+        left_pane.pack1(terminal_card, True, False)
 
         terminal = Vte.Terminal()
         # A slightly bigger, fixed-size font makes the output readable.
         terminal.set_font(Pango.FontDescription("Monospace 11"))
         # Keep the last 5000 lines visible when scrolling back.
         terminal.set_scrollback_lines(5000)
+        style_terminal(terminal)      # dark colours matching the window
         self.terminal = terminal
         scrolled.add(terminal)
 
         # -- LOG AREA: every background command and its output lands here.
         # It sits directly under the terminal in the lower half.
-        log_frame = Gtk.Frame()
-        log_header = Gtk.Box(spacing=12)
-        log_header.add(Gtk.Label(label="Background command log"))
         follow = Gtk.CheckButton(label="Follow log")
         follow.set_active(True)
-        log_header.add(follow)
-        log_frame.set_label_widget(log_header)
+        log_card, log_body = make_card(
+            "Background command log", icon="log", extra=follow)
+        log_card.set_margin_top(4)
         log_scrolled = Gtk.ScrolledWindow()
         log_scrolled.set_policy(
             Gtk.PolicyType.AUTOMATIC,
             Gtk.PolicyType.AUTOMATIC,
         )
+        log_scrolled.get_style_context().add_class("oq-well")
         # Minimum height; the divider decides the rest.
         log_scrolled.set_size_request(-1, 120)
         self.log_textview = Gtk.TextView()
@@ -573,6 +648,8 @@ class OmniQuadApp:
         self.log_textview.set_cursor_visible(False)
         self.log_textview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.log_textview.set_monospace(True)
+        self.log_textview.set_left_margin(8)
+        self.log_textview.set_top_margin(6)
         self.log_buffer = self.log_textview.get_buffer()
         log_scrolled.add(self.log_textview)
         adjustment = log_scrolled.get_vadjustment()
@@ -581,8 +658,8 @@ class OmniQuadApp:
                 adjustment.set_value(max(adjustment.get_lower(), adjustment.get_upper() - adjustment.get_page_size()))
         adjustment.connect("changed", scroll_to_latest)
         follow.connect("toggled", scroll_to_latest)
-        log_frame.add(log_scrolled)
-        left_pane.pack2(log_frame, True, False)
+        log_body.pack_start(log_scrolled, True, True, 0)
+        left_pane.pack2(log_card, True, False)
 
         # Put the divider in the middle (50/50) once the window has its
         # real size.  GLib.idle_add runs it after the window is shown.
@@ -594,13 +671,14 @@ class OmniQuadApp:
                 left_pane.set_position(height // 2)
             return False   # run only once
 
-        # -- RIGHT: host buttons, container list (stage 3 adds more) -----
+        # -- RIGHT: all the button cards (see build_right_panel) ----------
         self.controls = self.build_right_panel()
         sidebar = Gtk.ScrolledWindow()
         # NEVER scroll sideways: the sidebar then always asks for the full
         # width of the button columns, so no button is hidden at startup.
         # (Vertical scrolling stays possible for very small screens.)
         sidebar.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sidebar.set_overlay_scrolling(True)
         sidebar.add(self.controls)
         # resize=False, shrink=False: extra window width goes to the
         # terminal, and the divider can never squeeze the buttons away.
@@ -610,7 +688,15 @@ class OmniQuadApp:
 
         # Open the window big enough for ALL the buttons, but never
         # bigger than the screen (see fit_window_to_content).
-        window_width, window_height = fit_window_to_content(window, 1200, 720)
+        # GTK reports a size of 0 for hidden widgets, so make the CONTENT
+        # visible first (the window itself only appears further below).
+        # (Then hide again what must stay hidden, or it would be measured
+        # too: e.g. the Confirm shutdown pair would widen the host grid.)
+        header.show_all()
+        layout.show_all()
+        self.hide_until_needed()
+        window_width, window_height = fit_window_to_content(
+            window, 1360, 720, parts=[header, layout])
         # Put the left/right divider so the button panel gets exactly the
         # width it needs and the terminal gets all the rest.
         sidebar_width = sidebar.get_preferred_width()[1]
@@ -618,15 +704,10 @@ class OmniQuadApp:
         pane.set_position(window_width - sidebar_width - handle_width)
 
         self.main_window = window
-        window.show_all()
-
-        # show_all() makes EVERY widget visible, including the shutdown
-        # Confirm/Cancel row.  It must only appear after the user clicks
-        # "Shutdown", so hide it again explicitly.
-        self.shutdown_confirm_box.hide()
-        # Same for the loading spinners: hidden until actually used.
-        self.container_spinner.hide()
-        self.topics_spinner.hide()
+        # show() and NOT show_all(): the content is already visible (see
+        # above), and show_all() would briefly reveal the hidden widgets
+        # again -- the window would then open too wide and stay that way.
+        window.show()
 
         # Put the left divider at 50/50 now that the real window size
         # is known (see split_left_half above).
@@ -656,6 +737,16 @@ class OmniQuadApp:
             self.controls.set_sensitive(False)
             self.start_ssh_session(ip, user)
 
+    def hide_until_needed(self):
+        """Hide the widgets that only appear in special moments.
+
+        show_all() makes EVERY widget visible, including the shutdown
+        Confirm/Cancel pair (it must only appear after the user clicks
+        "Shutdown") and the loading rotors (only while loading).
+        """
+        self.shutdown_confirm_box.hide()
+        self.topics_spinner.hide()
+
     def feed_demo_banner(self):
         """In demo mode the terminal shows a banner instead of ssh.
 
@@ -668,7 +759,7 @@ class OmniQuadApp:
             "The buttons on the right work; the drone answers are SIMULATED.\n"
             "No ssh session is open, so this terminal is not interactive.\n"
         )
-        self.terminal.feed(banner.encode())
+        feed_text(self.terminal, banner)
 
     def on_ssh_child_exited(self, terminal, status, *args):
         """Called when the ssh process inside the terminal ends."""
@@ -677,6 +768,7 @@ class OmniQuadApp:
         self.session_ended = True
         self.controls.set_sensitive(False)
         self.reconnect_button.show()
+        self.connection_status.set_state("offline", "Disconnected")
         if self.shutdown_was_sent:
             # The drone closed the connection on purpose: this is the
             # expected result of "shutdown now", not an error.
@@ -686,7 +778,7 @@ class OmniQuadApp:
             text = ("\n--- The ssh session has ended (exit status "
                     + str(status) + "). ---\n"
                     "Choose Reconnect to start a new session.\n")
-        terminal.feed(text.encode())
+        feed_text(terminal, text)
 
     def on_terminal_button_press(self, terminal, event):
         """Right-click on the terminal opens a Copy / Paste menu.
@@ -773,11 +865,10 @@ class OmniQuadApp:
             return
         if error is not None:
             # The program could not even be started (e.g. sshpass missing).
-            self.terminal.feed(
-                ("Could not start ssh: " + error.message + "\n").encode()
-            )
+            feed_text(self.terminal, "Could not start ssh: " + error.message + "\n")
             self.session_ended = True
             self.reconnect_button.show()
+            self.connection_status.set_state("offline", "Disconnected")
         else:
             # Connected! First thing: check the container state in the
             # background, so the "Enter container" button reflects
@@ -790,11 +881,15 @@ class OmniQuadApp:
                     return False
                 if os.path.exists(self.control_socket):
                     self.controls.set_sensitive(True)
+                    self.connection_status.set_state("live", "Connected")
+                    # From now on, re-check the connection regularly.
+                    GLib.timeout_add_seconds(STATUS_CHECK_SECONDS, self.check_connection)
                     self.on_check_containers(None)
                     return False
                 if time.monotonic() >= deadline:
                     self.append_log("The SSH control connection is not ready. Choose Reconnect to try again.")
                     self.reconnect_button.show()
+                    self.connection_status.set_state("offline", "Not ready")
                     return False
                 return True
             GLib.timeout_add(100, wait_for_master)
@@ -802,6 +897,70 @@ class OmniQuadApp:
     # ==================================================================
     # STAGE 2: background command channel, log area and host buttons
     # ==================================================================
+
+    # ------------------------------------------------------------------
+    # Connection status in the header bar
+    # ------------------------------------------------------------------
+    def refresh_network_info(self):
+        """Look up the network to the drone in the background, then show it."""
+        ip = self.config["ip"]
+
+        def worker():
+            short, details = describe_network(ip)
+            GLib.idle_add(self.show_network_info, short, details)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def show_network_info(self, short, details):
+        if not self.closed:
+            self.connection_status.set_network(
+                short, "Drone " + self.config["ip"] + "\n" + details)
+        return False
+
+    def check_connection(self):
+        """Every few seconds: is the drone still answering?  (MAIN THREAD)
+
+        Sends the harmless command `true` through the existing master
+        connection (no password, nothing typed into the terminal, nothing
+        written to the log).  Answer -> green "Connected"; no answer
+        within a few seconds -> red "No response" (e.g. Wi-Fi dropped).
+        The network name is refreshed at the same time.
+        Returns False to stop the timer once the session is over.
+        """
+        if self.closed or self.session_ended:
+            return False
+        if self.status_check_running:
+            return True          # the previous check is still waiting
+        self.status_check_running = True
+        argv = build_ssh_argv(
+            self.config["user"], self.config["ip"],
+            extra_options=("ConnectTimeout=4", "BatchMode=yes",
+                           "ControlPath=" + self.control_socket),
+            remote_command=["true"])
+        ip = self.config["ip"]
+
+        def worker():
+            try:
+                answered = subprocess.run(argv, capture_output=True,
+                                          timeout=6).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                answered = False
+            short, details = describe_network(ip)
+            GLib.idle_add(self.on_connection_checked, answered, short, details)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True              # keep the timer running
+
+    def on_connection_checked(self, answered, short, details):
+        self.status_check_running = False
+        if self.closed or self.session_ended:
+            return False
+        if answered:
+            self.connection_status.set_state("live", "Connected")
+        else:
+            self.connection_status.set_state("offline", "No response")
+        self.show_network_info(short, details)
+        return False
 
     # ------------------------------------------------------------------
     # The log area under the terminal
@@ -828,132 +987,189 @@ class OmniQuadApp:
     # The right-hand button panel
     # ------------------------------------------------------------------
     def build_right_panel(self):
-        """Create the right-hand area: TWO columns of buttons.
+        """Create the right-hand area.
 
-        Column 1: drone host commands (docker / nuc_helper / shutdown).
-        Column 2: container shell + ROS buttons (typed into the
-        terminal), with the topic list and the echo button together.
+            +-----------------------+
+            | DRONE HOST            |      (free for now)
+            | [● bridge status  ⟳] |
+            | [Start/Stop bridge]   |
+            +-----------------------+--------------------------+
+            | CONTAINER SHELL       | ROS TOPICS               |
+            | DIAGNOSTICS           |  (tall list, most room)  |
+            | [Stop current command]|                          |
+            | [Shutdown]            |                          |
+            +-----------------------+--------------------------+
+
+        Each block is a rounded "card" (see make_card in ui_theme.py);
+        every button shows an icon and its text.
         """
-        columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        columns.set_border_width(10)
-        # These lists are filled by the two column builders below.
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        outer.set_border_width(10)
+        # These lists are filled by the builders below.
         self.container_shell_buttons = []   # all shell buttons except Enter
-        # The big "Stop current command" button lives at the BOTTOM of
-        # the left column; create it first so both builders can see it.
+        # The big "Stop current command" button: bottom of the shell
+        # column; create it first so the builders can see it.
         self.stop_command_button = self.make_stop_command_button()
-        # The host panel expands vertically so the stop button can be
-        # pinned to its bottom edge.
-        columns.pack_start(self.build_host_panel(), True, True, 0)
-        columns.pack_start(self.build_ros_panel(), False, False, 0)
-        return columns
+
+        # Top row: the small Drone host card on the left; the rest of the
+        # row is left EMPTY for now (room for future controls).
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        host_card = self.build_host_panel()
+        top.pack_start(host_card, False, False, 0)
+        outer.pack_start(top, False, False, 0)
+
+        bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        # The shell column keeps its natural width; the topics card gets
+        # all the remaining width (expand=True), so topic names fit.
+        shell_panel = self.build_shell_panel()
+        bottom.pack_start(shell_panel, False, False, 0)
+        bottom.pack_start(self.build_topics_panel(), True, True, 0)
+        outer.pack_start(bottom, True, True, 0)
+
+        # The host card is exactly as wide as the shell column under it,
+        # so the two line up.
+        self.left_column_width = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
+        self.left_column_width.add_widget(host_card)
+        self.left_column_width.add_widget(shell_panel)
+
+        # The ROS buttons start DISABLED: they only work inside the
+        # container shell.  "Enter" additionally needs the container to
+        # actually be RUNNING (checked with docker ps in the background);
+        # until that first check has succeeded it stays disabled, too.
+        self.update_shell_button_state()
+        return outer
 
     def make_stop_command_button(self):
         """Create the BIG 'Stop current command' button (sends Ctrl+C).
 
         It belongs to the container shell buttons (enabled only while
-        inside the container shell), but is DISPLAYED at the bottom of
-        the left column because it is needed often (echo/hz run
-        forever until stopped).
+        inside the container shell) and sits at the bottom of the shell
+        column, because it is needed often (echo/hz run forever until
+        stopped).  Amber outline = "stop", but not dangerous.
         """
-        button = Gtk.Button(label=self.find_terminal_label("stop_command"))
+        entry = self.find_terminal_entry("stop_command")
+        button = make_button(entry.get("label", "Stop current command"),
+                             icon=entry.get("icon"), style="warning",
+                             big=True, centered=True)
         button.connect("clicked", self.on_stop_command)
-        button.set_size_request(-1, 50)    # taller than normal buttons
-        button.get_style_context().add_class("big-stop-button")
         self.container_shell_buttons.append(button)
         return button
 
     def build_host_panel(self):
-        """Column 1: host commands + the container list display."""
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        panel.set_size_request(290, -1)
+        """The small DRONE HOST card (top left).
 
-        panel.add(Gtk.Label(label="Host commands (run on the drone)"))
+            DRONE HOST
+            [=] px4_fastlio_bridge            (refresh)
+                RUNNING
+            [ Stop Fast-LIO container ]
 
-        # The buttons are built from commands.json, not hard-coded.
+        * The status "label" is green when the bridge container runs,
+          red (grey text) when it does not, grey when unknown.  Its
+          refresh button re-checks by hand (docker ps in the background).
+        * ONE button starts or stops the bridge: it shows "Start" while
+          the bridge is stopped and "Stop" while it runs.  When the state
+          is unknown it shows a disabled "Start" -- we never start the
+          bridge blind.
+        Shutdown lives at the bottom of the shell column (build_power_area).
+        """
+        card, body = make_card("Drone host", icon="server")
+        body.set_spacing(8)
+
+        # The buttons are defined in commands.json (labels + icons).
+        entries = {}
         for entry in self.commands.get("host_buttons", []):
-            action = entry.get("action", "")
-            label = entry["label"]
-            # "Start" gets a green dot, "Stop" a red dot, so you can tell
-            # them apart at a glance.  The container check gets a whale,
-            # and shutdown gets a skull, as quick visual reminders.
-            if action == "start_container":
-                button = make_dot_button("#2ecc71", label)
-            elif action == "stop_container":
-                button = make_dot_button("#e74c3c", label)
-            elif action == "docker_ps":
-                button = make_emoji_button("\N{SPOUTING WHALE}", label)
-            elif action == "shutdown":
-                button = make_emoji_button("\N{SKULL}", label)
-            else:
-                button = Gtk.Button(label=label)
-            if action == "docker_ps":
-                button.connect("clicked", self.on_check_containers)
-            elif action == "start_container":
-                button.connect("clicked", self.on_start_container)
-            elif action == "stop_container":
-                button.connect("clicked", self.on_stop_container)
-            elif action == "shutdown":
-                button.connect("clicked", self.on_shutdown_clicked)
-                self.shutdown_button = button
-                # Red background with white text (see load_button_styles).
-                button.get_style_context().add_class("warm-action")
-            else:
-                # Unknown action: keep the button but make it do nothing
-                # except log a note (safer than crashing).
-                button.connect("clicked", self.on_unknown_action, action)
-            panel.add(button)
+            entries[entry.get("action", "")] = entry
 
-        # -- the shutdown "arm -> confirm" extra row (hidden at first) --
-        # Clicking "Shutdown" hides that button and shows these two.
-        self.shutdown_confirm_box = Gtk.Box(spacing=8)
-        confirm = Gtk.Button(label="Confirm shutdown")
-        confirm.get_style_context().add_class("destructive-action")
+        refresh = entries.get("docker_ps", {})
+        self.bridge_status = BridgeStatus(
+            self.commands["container_name"],
+            refresh.get("label", "Check running containers"),
+            self.on_check_containers)
+        body.pack_start(self.bridge_status, False, False, 0)
+
+        # The Start/Stop toggle: a Gtk.Stack holds both buttons and shows
+        # only the one that fits the bridge's state (update_bridge_widgets).
+        start = entries.get("start_container", {})
+        stop = entries.get("stop_container", {})
+        self.start_bridge_button = make_button(
+            start.get("label", "Start"), icon=start.get("icon"), icon_color=GREEN_COLOR)
+        self.start_bridge_button.connect("clicked", self.on_start_container)
+        self.stop_bridge_button = make_button(
+            stop.get("label", "Stop"), icon=stop.get("icon"), icon_color=RED_COLOR)
+        self.stop_bridge_button.connect("clicked", self.on_stop_container)
+        self.bridge_toggle = Gtk.Stack()
+        self.bridge_toggle.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.bridge_toggle.add_named(self.start_bridge_button, "start")
+        self.bridge_toggle.add_named(self.stop_bridge_button, "stop")
+        body.pack_start(self.bridge_toggle, False, False, 0)
+
+        shutdown = entries.get("shutdown")
+        if shutdown is not None:
+            # Red: the only irreversible action.  Placed at the bottom of
+            # the shell column, under "Stop current command".
+            # big=True: as tall as "Stop current command" above it.
+            self.shutdown_button = make_button(
+                shutdown["label"], icon=shutdown.get("icon"), style="danger",
+                big=True, centered=True)
+            self.shutdown_button.connect("clicked", self.on_shutdown_clicked)
+
+        # Any other host action in commands.json: keep the button, but it
+        # only logs a note (safer than crashing).
+        known = ("docker_ps", "start_container", "stop_container", "shutdown")
+        for action, entry in entries.items():
+            if action not in known:
+                button = make_button(entry["label"], icon=entry.get("icon"))
+                button.connect("clicked", self.on_unknown_action, action)
+                body.pack_start(button, False, False, 0)
+
+        self.update_bridge_widgets()
+        return card
+
+    def update_bridge_widgets(self):
+        """Show the bridge state (self.container_running) in the card.
+
+        True  -> green label, "Stop" button
+        False -> red label, "Start" button
+        None  -> grey label (unknown), disabled "Start" button
+        """
+        if self.container_running is True:
+            self.bridge_status.set_state("running")
+            self.bridge_toggle.set_visible_child_name("stop")
+        else:
+            self.bridge_status.set_state(
+                "stopped" if self.container_running is False else "unknown")
+            self.bridge_toggle.set_visible_child_name("start")
+        unknown = self.container_running is None
+        self.start_bridge_button.set_sensitive(not unknown)
+        self.start_bridge_button.set_tooltip_text(
+            "Bridge state unknown: use the refresh button first." if unknown else None)
+
+    def build_power_area(self):
+        """Shutdown, or the "Confirm shutdown" + cancel pair after one click."""
+        power = Gtk.Box(spacing=6)
+        if self.shutdown_button is not None:
+            power.pack_start(self.shutdown_button, True, True, 0)
+        self.shutdown_confirm_box = Gtk.Box(spacing=6)
+        confirm = make_button("Confirm shutdown", icon="power",
+                              style="danger", big=True, centered=True)
         confirm.connect("clicked", self.on_shutdown_confirm)
-        cancel = Gtk.Button(label="Cancel")
+        cancel = make_button("", icon="close", big=True, centered=True)
+        cancel.set_tooltip_text("Cancel the shutdown")
         cancel.connect("clicked", self.on_shutdown_cancel)
         self.shutdown_confirm_box.pack_start(confirm, True, True, 0)
-        self.shutdown_confirm_box.pack_start(cancel, True, True, 0)
-        panel.add(self.shutdown_confirm_box)
+        self.shutdown_confirm_box.pack_start(cancel, False, False, 0)
+        power.pack_start(self.shutdown_confirm_box, True, True, 0)
+        # Hidden until "Shutdown" is clicked (see hide_until_needed).
         self.shutdown_confirm_box.hide()
-        # NOTE: window.show_all() (called later in open_main_window)
-        # would reveal this row again, so open_main_window hides it
-        # explicitly right after showing the window.
+        return power
 
-        # -- container list (filled by "Check running containers") ------
-        # The label sits in a row together with a small loading spinner
-        # that appears only while the check is running.
-        check_row = Gtk.Box(spacing=6)
-        check_label = Gtk.Label(label="Containers running (last check):")
-        check_label.set_xalign(0.0)
-        self.container_spinner = Gtk.Spinner()
-        check_row.pack_start(check_label, True, True, 0)
-        check_row.pack_start(self.container_spinner, False, False, 0)
-        panel.add(check_row)
-        list_scrolled = Gtk.ScrolledWindow()
-        list_scrolled.set_policy(
-            Gtk.PolicyType.NEVER,       # no horizontal scrollbar needed
-            Gtk.PolicyType.AUTOMATIC,
-        )
-        list_scrolled.set_size_request(-1, 140)
-        self.container_listbox = Gtk.ListBox()
-        # No selectable rows: this is a display, not a menu, and it must
-        # never steal the keyboard focus from the terminal.
-        self.container_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        list_scrolled.add(self.container_listbox)
-        panel.add(list_scrolled)
-
-        # Bottom of the left column: the big "Stop current command".
-        panel.add(Gtk.Separator())
-        panel.pack_end(self.stop_command_button, False, False, 0)
-
-        return panel
-
-    def build_ros_panel(self):
-        """Column 2: container shell buttons + ROS topics (clickable)."""
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    def build_shell_panel(self):
+        """Bottom-left column: container shell, diagnostics, Ctrl+C."""
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         panel.set_size_request(290, -1)
 
-        panel.add(Gtk.Label(label="Container shell / ROS (terminal)"))
+        shell_card, shell_body = make_card("Container shell", icon="terminal")
+        checks_card, checks_body = make_card("Diagnostics", icon="gauge")
 
         # These buttons are typed INTO the terminal, so they only make
         # sense when the user is inside the container shell.  The "Enter"
@@ -961,60 +1177,81 @@ class OmniQuadApp:
         # (container_shell_buttons was initialized in build_right_panel.)
         self.enter_container_button = None
         self.selected_topic = ""            # topic clicked in the list
-        self.echo_selected_button = None    # placed next to the topic list
+        self.echo_selected_button = None    # placed under the topic list
         self.topics_request = None
-        self.list_topics_button = None
+        self.list_topics_button = None      # placed above the topic list
 
         for entry in self.commands.get("terminal_buttons", []):
             action = entry.get("action", "")
             label = entry["label"]
-            button = Gtk.Button(label=label)
+            icon = entry.get("icon")
             if action == "enter_container":
+                button = make_button(label, icon=icon, style="primary")
                 button.connect("clicked", self.on_enter_container)
                 self.enter_container_button = button
+                shell_body.pack_start(button, False, False, 0)
             elif action == "leave_container":
+                button = make_button(label, icon=icon)
                 button.connect("clicked", self.on_leave_container)
                 self.container_shell_buttons.append(button)
+                shell_body.pack_start(button, False, False, 0)
             elif action == "stop_command":
-                # Placed at the bottom of the LEFT column instead (see
-                # build_right_panel / build_host_panel).
+                # Created separately (make_stop_command_button) and
+                # placed at the bottom of this column, see below.
                 continue
             elif action == "list_topics":
-                self.list_topics_button = button
+                # Goes into the ROS topics card, right above the list it
+                # fills (see build_topics_panel).
+                button = make_button(label, icon=icon)
                 button.connect("clicked", self.on_list_topics)
                 self.container_shell_buttons.append(button)
+                self.list_topics_button = button
             elif action == "echo_selected" and not entry.get("command"):
                 # No fixed command: echo whatever topic is selected.
-                # This button is added AFTER the topic list below, so it
-                # sits right next to what it acts on.
+                # Goes into the ROS topics card, right BELOW the list.
+                button = make_button(label, icon=icon, style="primary")
                 button.connect("clicked", self.on_echo_selected_topic)
                 self.container_shell_buttons.append(button)
                 self.echo_selected_button = button
-                continue   # not added to the panel in this loop
             else:
                 # A fixed command typed into the terminal on each click.
+                button = make_button(label, icon=icon)
                 button.connect("clicked", self.on_send_to_terminal,
                                entry.get("command", ""))
                 self.container_shell_buttons.append(button)
-            panel.add(button)
+                checks_body.pack_start(button, False, False, 0)
+        panel.pack_start(shell_card, False, False, 0)
+        panel.pack_start(checks_card, False, False, 0)
 
-        # ROS topic list (filled by "List available topics"), with its
-        # own little loading spinner.
-        topic_row = Gtk.Box(spacing=6)
-        topic_label = Gtk.Label(label="ROS topics (click one to select):")
-        topic_label.set_xalign(0.0)
-        self.topics_spinner = Gtk.Spinner()
-        topic_row.pack_start(topic_label, True, True, 0)
-        topic_row.pack_start(self.topics_spinner, False, False, 0)
-        panel.add(topic_row)
+        # Bottom of the column (pack_end fills from the bottom up):
+        # Shutdown at the very bottom, "Stop current command" above it.
+        panel.pack_end(self.build_power_area(), False, False, 0)
+        panel.pack_end(self.stop_command_button, False, False, 0)
+        return panel
+
+    def build_topics_panel(self):
+        """Bottom-right: the ROS topics card, as tall and wide as possible.
+
+        Top to bottom in the order you use it:
+        [List available topics] / filter / the topic list / [Echo selected].
+        The rotor spins in the card title while the list is fetched.
+        """
+        self.topics_spinner = RotorSpinner()
+        topics_card, topics_body = make_card(
+            "ROS topics", icon="broadcast", extra=self.topics_spinner)
+        # At least this wide, so long topic names stay readable.
+        topics_card.set_size_request(380, -1)
+        if self.list_topics_button is not None:
+            topics_body.pack_start(self.list_topics_button, False, False, 0)
 
         self.topic_filter = Gtk.SearchEntry()
         self.topic_filter.set_placeholder_text("Filter topics by name")
-        panel.add(self.topic_filter)
+        topics_body.pack_start(self.topic_filter, False, False, 0)
         topics_scrolled = Gtk.ScrolledWindow()
         topics_scrolled.set_policy(
-            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        topics_scrolled.set_size_request(-1, 120)
+            Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        topics_scrolled.get_style_context().add_class("oq-well")
+        topics_scrolled.set_size_request(-1, 160)
         self.topics_listbox = Gtk.ListBox()
         # SINGLE selection: one topic can be highlighted and echoed.
         self.topics_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
@@ -1022,18 +1259,13 @@ class OmniQuadApp:
         self.topics_listbox.set_filter_func(self.topic_matches_filter)
         self.topic_filter.connect("changed", self.on_topic_filter_changed)
         topics_scrolled.add(self.topics_listbox)
-        panel.add(topics_scrolled)
+        # expand=True: the list takes all the spare height of the card.
+        topics_body.pack_start(topics_scrolled, True, True, 0)
 
         # "Echo selected topic" right below the list it acts on.
         if self.echo_selected_button is not None:
-            panel.add(self.echo_selected_button)
-
-        # The ROS buttons start DISABLED: they only work inside the
-        # container shell.  "Enter" additionally needs the container to
-        # actually be RUNNING (checked with docker ps in the background);
-        # until that first check has succeeded it stays disabled, too.
-        self.update_shell_button_state()
-        return panel
+            topics_body.pack_start(self.echo_selected_button, False, False, 0)
+        return topics_card
 
     def on_unknown_action(self, button, action):
         self.append_log(
@@ -1062,7 +1294,7 @@ class OmniQuadApp:
         if self.demo_mode:
             # Demo: no drone is contacted at all.  The answer is produced
             # in the main thread with simulated output, so the whole GUI
-            # (log, container list, stop/shutdown sequences) can be tried
+            # (log, bridge status, stop/shutdown sequences) can be tried
             # out without any connection.
             GLib.idle_add(self.demo_run, ssh_command, on_done)
             return
@@ -1118,6 +1350,7 @@ class OmniQuadApp:
         # Keep the "Enter container" button in sync with the simulated
         # container state.
         self.container_running = self.demo_container_running
+        self.update_bridge_widgets()
         self.update_shell_button_state()
         return False   # for GLib.idle_add: run only once
 
@@ -1165,25 +1398,21 @@ class OmniQuadApp:
         self.controls.set_sensitive(enabled and not self.session_ended and not self.shutdown_was_sent)
 
     # ------------------------------------------------------------------
-    # Button: Check running containers
+    # Bridge status check (refresh button; also automatic)
     # ------------------------------------------------------------------
     def on_check_containers(self, button):
+        """Is the bridge container running?  (docker ps in the background)"""
         self.set_drone_buttons_enabled(False)
-        # Show the small loading spinner next to the list label while
-        # the check runs.
-        self.container_spinner.show()
-        self.container_spinner.start()
+        # The rotor replaces the refresh button while the check runs.
+        self.bridge_status.set_checking(True)
         self.run_ssh_background(
             CONTAINER_LIST,
             self.on_containers_result)
 
     def on_containers_result(self, success, returncode, output):
-        """Show the docker ps result as a list in the window."""
-        # The check is done: stop and hide the loading spinner.
-        self.container_spinner.stop()
-        self.container_spinner.hide()
+        """Turn the docker ps answer into the bridge state."""
+        self.bridge_status.set_checking(False)
         self.set_drone_buttons_enabled(True)
-        self.clear_container_list()
 
         if not success:
             self.set_container_state(None)
@@ -1208,10 +1437,6 @@ class OmniQuadApp:
             self.append_log("No containers are running right now.")
             self.set_container_state(False)
             return
-        for line in lines:
-            if "|" in line:
-                name, status = line.split("|", 1)
-                self.add_container_row(name.strip(), status.strip())
         self.append_log("Found " + str(len(lines)) + " running container(s).")
 
         # Remember whether OUR container is among them: this decides
@@ -1220,9 +1445,11 @@ class OmniQuadApp:
         self.set_container_state(self.commands["container_name"] in names)
 
     def set_container_state(self, running):
+        """running: True / False / None (unknown).  Updates the whole GUI."""
         self.container_running = running
         if running is False and self.inside_container_shell:
             self.clear_shell_state()
+        self.update_bridge_widgets()
         self.update_shell_button_state()
 
     def clear_shell_state(self):
@@ -1231,26 +1458,6 @@ class OmniQuadApp:
         self.topics_spinner.stop()
         self.topics_spinner.hide()
         self.clear_topic_list()
-
-    def clear_container_list(self):
-        """Remove all rows from the container list display."""
-        for child in self.container_listbox.get_children():
-            self.container_listbox.remove(child)
-
-    def add_container_row(self, name, status):
-        """Add one 'name    status' row to the container list display."""
-        row = Gtk.ListBoxRow()
-        hbox = Gtk.Box(spacing=6)
-        name_label = Gtk.Label(label=name)
-        name_label.set_xalign(0.0)
-        status_label = Gtk.Label(label=status)
-        status_label.set_xalign(0.0)
-        status_label.get_style_context().add_class("dim-label")
-        hbox.pack_start(name_label, True, True, 0)
-        hbox.pack_start(status_label, False, False, 0)
-        row.add(hbox)
-        self.container_listbox.add(row)
-        row.show_all()
 
     # ------------------------------------------------------------------
     # Button: Start Fast-LIO container
@@ -1270,8 +1477,8 @@ class OmniQuadApp:
             self.append_log(
                 "Start command FAILED (exit code "
                 + str(returncode) + "). See the log above for details.")
-        # Immediately check the containers again, so the list in the
-        # window shows whether the Fast-LIO container is really up.
+        # Immediately check again, so the status label shows whether the
+        # Fast-LIO container is really up.
         self.on_check_containers(None)
 
     # ------------------------------------------------------------------
@@ -1333,8 +1540,8 @@ class OmniQuadApp:
         if not success:
             self.append_log(
                 "WARNING: could not verify the container state "
-                "(docker ps failed). Check manually with 'Check running "
-                "containers'!")
+                "(docker ps failed). Check again with the refresh button "
+                "next to the bridge status!")
             return
         if name in output.splitlines():
             self.append_log(
@@ -1532,12 +1739,12 @@ class OmniQuadApp:
                 return entry.get("command", "")
         return ""
 
-    def find_terminal_label(self, action):
-        """Look up a terminal button's label in commands.json."""
+    def find_terminal_entry(self, action):
+        """Look up a terminal button's whole entry in commands.json."""
         for entry in self.commands.get("terminal_buttons", []):
             if entry.get("action") == action:
-                return entry.get("label", "")
-        return ""
+                return entry
+        return {}
 
     # ==================================================================
     # STAGE 3: container shell buttons and ROS topic inspection
@@ -1751,6 +1958,7 @@ class OmniQuadApp:
         """
         topic = command.replace("ros2 topic echo ", "")
         window = Gtk.Window(title="Echo - " + topic)
+        style_window(window)
         window.set_default_size(750, 500)
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(
@@ -1758,6 +1966,7 @@ class OmniQuadApp:
         terminal = Vte.Terminal()
         terminal.set_font(Pango.FontDescription("Monospace 11"))
         terminal.set_scrollback_lines(5000)
+        style_terminal(terminal)
         scrolled.add(terminal)
         window.add(scrolled)
         self.echo_windows.append(window)
@@ -1768,11 +1977,12 @@ class OmniQuadApp:
 
         if self.demo_mode:
             # Demo: no ssh session exists.  Show what WOULD happen.
-            terminal.feed(
-                ("DEMO MODE - no ssh session is open.\n"
-                 "A real connection would run, in a separate terminal:\n"
-                 "  docker exec -it px4_fastlio_bridge bash\n"
-                 "  " + command + "\n").encode())
+            feed_text(
+                terminal,
+                "DEMO MODE - no ssh session is open.\n"
+                "A real connection would run, in a separate terminal:\n"
+                "  docker exec -it px4_fastlio_bridge bash\n"
+                "  " + command + "\n")
             return
 
         # Start the echo directly in its container over the master socket.
@@ -1784,7 +1994,7 @@ class OmniQuadApp:
 
         def spawn_done(spawn_terminal, pid, error, *args):
             if error is not None:
-                spawn_terminal.feed(("Could not start ssh: " + error.message + "\n").encode())
+                feed_text(spawn_terminal, "Could not start ssh: " + error.message + "\n")
 
         terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
@@ -1804,15 +2014,11 @@ class OmniQuadApp:
         if window in self.echo_windows:
             self.echo_windows.remove(window)
 
-    def on_export_csv(self, button, kind):
-        if kind == "topics":
-            columns = ("Topic",)
-            rows = [(row.get_child().get_text(),) for row in self.topics_listbox.get_children()
-                    if row.get_child_visible()]
-        else:
-            columns = ("Container", "Status")
-            rows = [tuple(label.get_text() for label in row.get_child().get_children())
-                    for row in self.container_listbox.get_children()]
+    def on_export_csv(self, button, kind="topics"):
+        """Save the topics shown in the list (filter applied) as CSV."""
+        columns = ("Topic",)
+        rows = [(row.get_child().get_text(),) for row in self.topics_listbox.get_children()
+                if row.get_child_visible()]
         if not rows:
             self.append_log("No visible " + kind + " to export.")
             return
@@ -1869,7 +2075,7 @@ class OmniQuadApp:
 
 def main(demo=False):
     try:
-        load_button_styles()
+        apply_theme()
         while True:
             app = OmniQuadApp(demo=demo)
             demo = False

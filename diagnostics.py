@@ -1,4 +1,4 @@
-"""Settings and read-only diagnostics shared by both desktop interfaces."""
+"""Settings, command definitions and small helpers used by gtk_app.py."""
 
 import csv
 import json
@@ -17,10 +17,8 @@ CONTAINER_LIST = 'docker ps --format "{{.Names}}|{{.Status}}"'
 
 
 def endpoint_file():
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    else:
-        base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    """Where the last used user + IP are remembered (~/.local/state/...)."""
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return base / "OmniQuadGUI" / "connection.json"
 
 

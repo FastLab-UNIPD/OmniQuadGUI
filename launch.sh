@@ -16,9 +16,9 @@ cd "$APP_DIR" || exit 1
 # rights.  (Icon=omniquadgui in the .desktop file is looked up there.)
 ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 ICON_TARGET="$ICON_DIR/omniquadgui.png"
-if [ -f omniquadgui.png ] && [ ! -f "$ICON_TARGET" ]; then
+if [ -f images/omniquadgui.png ] && [ ! -f "$ICON_TARGET" ]; then
     mkdir -p "$ICON_DIR" 2>/dev/null
-    cp omniquadgui.png "$ICON_TARGET" 2>/dev/null
+    cp images/omniquadgui.png "$ICON_TARGET" 2>/dev/null
     # Refresh the icon cache so the new icon is found immediately.
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" \

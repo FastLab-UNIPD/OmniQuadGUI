@@ -43,6 +43,41 @@ class GtkDemoTests(unittest.TestCase):
             app.shutdown_verify_done(True, 0, "")
             shutdown.assert_not_called()
 
+    def test_bridge_label_and_toggle_follow_the_container_state(self):
+        from gtk_app import GLib, OmniQuadApp
+        app = OmniQuadApp(demo=True)
+        self.addCleanup(self.close_app, app)
+        context = GLib.MainContext.default()
+
+        def until(predicate):
+            deadline = time.monotonic() + 3
+            while not predicate() and time.monotonic() < deadline:
+                context.iteration(False)
+                time.sleep(0.002)
+            self.assertTrue(predicate())
+
+        def label_state():
+            classes = app.bridge_status.get_style_context().list_classes()
+            return [name for name in classes if name.startswith("oq-bridge-")]
+
+        # Demo bridge runs: green label, the toggle offers "Stop".
+        until(lambda: app.container_running is True and app.controls.get_sensitive())
+        self.assertEqual(label_state(), ["oq-bridge-running"])
+        self.assertEqual(app.bridge_toggle.get_visible_child_name(), "stop")
+        # Stop it with the toggle (full safe sequence): red label, "Start".
+        app.stop_bridge_button.clicked()
+        until(lambda: app.container_running is False and app.controls.get_sensitive())
+        self.assertEqual(label_state(), ["oq-bridge-stopped"])
+        self.assertEqual(app.bridge_toggle.get_visible_child_name(), "start")
+        self.assertTrue(app.start_bridge_button.get_sensitive())
+        # A failed check: unknown state, and Start is not allowed blind.
+        app.on_containers_result(False, 1, "boom")
+        self.assertEqual(label_state(), ["oq-bridge-unknown"])
+        self.assertFalse(app.start_bridge_button.get_sensitive())
+        # The refresh button checks again (demo answer: still stopped).
+        app.bridge_status.refresh_button.clicked()
+        until(lambda: app.container_running is False)
+
     def test_reconnect_opens_a_fresh_login(self):
         import gtk_app
         sessions = []
@@ -121,7 +156,7 @@ class GtkDemoTests(unittest.TestCase):
             app.password_entry.set_text(app.config["demo_password"])
             app.connect_button.clicked()
             self.addCleanup(self.close_app, app)
-            until(lambda: len(app.container_listbox.get_children()) == 1)
+            until(lambda: app.container_running is True)
             app.enter_container_button.clicked()
             app.list_topics_button.clicked()
             self.assertFalse(app.list_topics_button.get_sensitive())
