@@ -1,0 +1,23 @@
+name: Ubuntu GUI
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["22.04", "24.04"]
+    container: ubuntu:${{ matrix.release }}
+    steps:
+      - name: Install desktop test dependencies
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 xvfb xauth
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise the offline GTK interface
+        run: xvfb-run -a /usr/bin/python3 -B -m unittest discover -s tests -v

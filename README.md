@@ -1,16 +1,36 @@
 # OmniQuadGUI
 
-A small Ubuntu desktop app that connects over SSH to the onboard computer of a
-drone (Radxa Rock 5B, ROS 2, Docker) and shows that connection in a large,
-always-visible terminal, with buttons for container management and ROS topic
-inspection.
+A desktop app that connects over SSH to the onboard computer of a
+drone (Radxa Rock 5B, ROS 2, Docker) for container and ROS diagnostics. Ubuntu includes an embedded terminal and
+container management. Windows includes a native diagnostics window and a
+separate interactive SSH terminal.
 
 **It does not control flight.** Use it only while the drone sits on the desk,
 with the battery disconnected or rotors removed.
 
 ---
 
-## 1. Install (once)
+## Windows with an existing Conda environment
+
+From the repository folder in your activated Conda prompt, run:
+
+```powershell
+python main.py
+```
+
+The desktop window uses Python's Tkinter. Select **Offline demo** and click
+**Running containers** or **ROS topics** to try it immediately. No network
+connection or local Docker engine is required.
+
+For live use, enter the SSH user and host, then choose **Open SSH terminal**.
+Windows OpenSSH handles the password prompt or SSH key, and asks you to verify
+a new host. The two list buttons run read-only queries in the background.
+They require a previously verified host and a working SSH key or agent.
+If you use password authentication, you can run commands in the interactive
+terminal. Container start/stop, the embedded terminal and shutdown controls
+are available in the Ubuntu interface.
+
+## 1. Install on Ubuntu (once)
 
 On a fresh Ubuntu desktop (tested style: 22.04 / 24.04), open a normal
 terminal and run:
@@ -34,7 +54,7 @@ sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 sshpass \
 
 The app itself uses **only the Python standard library** (json, os,
 subprocess, threading, …) plus the GTK/VTE libraries above — there is
-**nothing to install with `pip`**, and the whole GUI is one Python file.
+**nothing to install with `pip`**.
 
 Ubuntu's package manager installs `gir1.2-pango-1.0`,
 `gir1.2-gdk-pixbuf-2.0` and `openssh-client` automatically as
@@ -45,7 +65,7 @@ touches.
 On the drone side, SSH must be enabled and the user (default `rock`) must be
 allowed to log in with a password.
 
-## 2. Run
+## 2. Run on Ubuntu
 
 ```bash
 cd OmniQuadGUI
@@ -93,7 +113,10 @@ The last successfully used IP is remembered in `config.json`.
 
 | File              | Purpose                                                        |
 |-------------------|----------------------------------------------------------------|
-| `main.py`         | The whole app (start window, connection, terminal, buttons).   |
+| `main.py`         | Selects the native desktop for the current OS.   |
+| `gtk_app.py`      | Ubuntu interface, VTE terminal and container management. |
+| `windows_app.py`  | Native Windows diagnostics and SSH terminal launcher. |
+| `diagnostics.py`  | Shared settings, diagnostic commands and parsing. |
 | `config.json`     | Settings: user name, last-used IP, `dry_run` flag. Editable.   |
 | `commands.json`   | The button definitions (labels + commands). Data only.         |
 | `omniquadgui.png` | The app logo (login background, window + shortcut icon).       |
@@ -201,9 +224,9 @@ in the drone's home directory and logs the result.
 - Only when the container is verified stopped, the app runs
   `sudo -S -p '' shutdown now`, sending the login password through the
   ssh process's standard input (never in the command text, never in the
-  log). The connection dropping afterwards is expected — you'll see
-  "Shutdown sent, connection closed" and all drone buttons become
-  disabled, since the drone is off.
+  log). If SSH acknowledges the command, the controls are disabled.
+  If the connection drops before SSH returns success, the GUI reports that
+  shutdown could not be confirmed.
 
 ### dry_run (default ON)
 With `"dry_run": true` in `config.json`, everything above happens
@@ -246,29 +269,17 @@ buttons. In the separate echo windows, press Ctrl+C directly in that
 window's terminal instead.
 
 ### List available topics
-Types `ros2 topic list` **into the terminal** — the same place where you
-are inside the container and `ros2` is available — and then **waits until
-the command has really finished** (the app types a small marker line
-after the command and polls the terminal screen until the marker
-appears, for up to 30 seconds). Because it waits for the *actual answer*
-instead of a fixed number of seconds, this works the same on fast and
-slow PCs and networks — the first call still starts the ROS daemon and
-can be slow. When the topics are printed they appear in the list below;
-**click one** to select it. If nothing is found (e.g. the nodes are
-still starting), the log tells you and you can simply click the button
-again.
-
-This works on both tested Ubuntu versions: on Ubuntu 24.04 the app
-reads the terminal with the modern VTE function, on Ubuntu 22.04 it
-automatically falls back to the older one that version ships — before
-this fix, the topic list stayed empty on Ubuntu 22. If **fewer topics
-appear in the terminal itself** than expected, that is not a GUI
-problem: the command runs on the drone, so a short list usually means
-the ROS nodes were still starting — wait a moment and click the button
-again.
+Reads the configured topic list command in a separate interactive Bash inside
+the configured container, using the existing SSH master connection. Results
+come from that command's output, so terminal width, scrollback and the VTE
+version do not affect the list. The main terminal stays available while the
+request runs. A refresh replaces the old list and selection. If the container
+is still starting, refresh again after its nodes have come up.
 
 ### Echo selected topic
-Types `ros2 topic echo <the topic you clicked>` into the terminal.
+
+Select a topic with the mouse or keyboard, then click **Echo selected topic**
+to open a dedicated echo terminal for it.
 
 ### The fixed ROS buttons
 Each types its fixed command into the terminal (definitions live in
@@ -307,3 +318,11 @@ commands keep running in the main terminal as before.
       topic list (clickable), echo/hz buttons.
 
 All three stages are complete.
+
+
+## Run the offline checks
+
+From the repository root, run `python -B -m unittest discover -s tests -v`.
+On Ubuntu, use the system Python with a display, or run
+`xvfb-run -a /usr/bin/python3 -B -m unittest discover -s tests -v`.
+The pull request checks exercise the GTK demo on Ubuntu 22.04 and 24.04.

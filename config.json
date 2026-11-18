@@ -1,7 +1,7 @@
 {
     "user": "rock",
-    "ip": "192.168.1.225",
-    "dry_run": false,
+    "ip": "",
+    "dry_run": true,
     "demo_user": "demo",
     "demo_password": "demo"
 }
