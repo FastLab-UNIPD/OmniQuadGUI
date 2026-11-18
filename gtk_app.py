@@ -1,6 +1,5 @@
 """Ubuntu GTK 3 / VTE interface for OmniQuadGUI."""
 
-import json
 import os
 import shlex
 import shutil
@@ -9,8 +8,8 @@ import tempfile
 import threading
 import time
 
-from diagnostics import (CONFIG_FILE, COMMANDS_FILE, CONTAINER_LIST, load_config,
-                         topic_list_command, topic_names)
+from diagnostics import (CONTAINER_LIST, export_csv, load_commands, load_config,
+                         save_endpoint, topic_list_command, topic_names)
 
 
 # ---- GTK and VTE imports ---------------------------------------------------
@@ -36,21 +35,6 @@ LOGO_FILE = os.path.join(APP_DIR, "omniquadgui.png")   # app logo
 CONNECT_TIMEOUT_SECONDS = 10
 MAX_LOG_LINES = 5000
 MAX_LOG_CHARS = 512_000
-
-
-def save_config(config):
-    """Write config.json back to disk.
-
-    IMPORTANT: the password is NEVER saved here (or anywhere else).
-    Only harmless settings like the last-used IP are stored.
-    """
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=4)
-    except OSError as error:
-        # Not fatal -- the app still works, we just could not remember
-        # the IP for next time.
-        print("Could not save config.json:", error)
 
 
 def build_ssh_argv(user, ip, extra_options=(), remote_command=None):
@@ -173,10 +157,7 @@ def explain_ssh_error(returncode, output, ip, user):
 
 class OmniQuadApp:
 
-    def __init__(self):
-        # Button colours and styles (dot buttons, warm shutdown button).
-        load_button_styles()
-
+    def __init__(self, demo=False):
         # Use the logo as the window icon (taskbar / title bar) for ALL
         # windows this app opens.
         try:
@@ -186,7 +167,7 @@ class OmniQuadApp:
 
         # ---- shared state ----
         self.config = load_config()          # user / ip / dry_run
-        self.commands = load_config_commands()
+        self.commands = load_commands()
         self.password = ""                   # only ever kept in memory
         self.control_socket = ""             # path of the shared ssh socket
         self.ssh_tmp_dir = ""                # folder that holds that socket
@@ -207,6 +188,8 @@ class OmniQuadApp:
         # Set to True once "sudo shutdown" was really sent, so the
         # "connection lost" message in the terminal stays calm.
         self.session_ended = False
+        self.closed = False
+        self.reconnect_requested = False
         self.shutdown_was_sent = False
         # Demo mode state: pretend the Fast-LIO container is running.
         self.demo_container_running = True
@@ -224,7 +207,10 @@ class OmniQuadApp:
         # so several topics can be echoed at the same time.
         self.echo_windows = []
 
-        self.show_start_window()
+        if demo:
+            self.open_demo()
+        else:
+            self.show_start_window()
 
     # ------------------------------------------------------------------
     # Start window
@@ -302,16 +288,16 @@ class OmniQuadApp:
         self.status_label.set_xalign(0.0)  # left-aligned text
         vbox.add(self.status_label)
 
-        # Helpful hint: how to open the demo view without a drone.
-        vbox.add(Gtk.Label(
-            label="Tip: user '" + self.config["demo_user"] + "' with "
-                  "password '" + self.config["demo_password"] + "' opens "
-                  "a demo view without connecting (commands are simulated)."))
-        hint_label = vbox.get_children()[-1]
-        hint_label.set_line_wrap(True)
-        hint_label.set_xalign(0.0)
+        self.demo_button = Gtk.Button(label="Open offline demo")
+        self.demo_button.connect("clicked", lambda button: self.open_demo())
+        vbox.add(self.demo_button)
 
         window.show_all()
+
+    def open_demo(self):
+        self.demo_mode = True
+        self.container_running = True
+        self.open_main_window("demo", self.config["demo_user"])
 
     # ------------------------------------------------------------------
     # Connecting
@@ -335,11 +321,7 @@ class OmniQuadApp:
         # config.json (especially not a fake IP).
         if (user == self.config["demo_user"]
                 and password == self.config["demo_password"]):
-            self.demo_mode = True
-            self.password = ""   # no real password exists in demo mode
-            # The simulated container starts in the "running" state.
-            self.container_running = True
-            self.open_main_window(ip if ip else "demo", user)
+            self.open_demo()
             return
 
         # ---- Normal login: a real ssh connection is required ----
@@ -358,6 +340,7 @@ class OmniQuadApp:
 
         # Disable the button while checking, show what we are doing.
         self.connect_button.set_sensitive(False)
+        self.demo_button.set_sensitive(False)
         self.status_label.set_text("Connecting to " + user + "@" + ip + " ...")
 
         # Start the background check.  The password is handed to the
@@ -437,17 +420,21 @@ class OmniQuadApp:
         if not success:
             # Re-enable the button and show the plain-English error.
             self.connect_button.set_sensitive(True)
+            self.demo_button.set_sensitive(True)
             self.status_label.set_text(message)
             return False  # tells GLib.idle_add: do not call me again
 
         # Success: remember the working IP for next time.
         self.config["user"] = user
         self.config["ip"] = ip
-        save_config(self.config)
 
         # Remember what we need for the real session.
         self.password = password
         self.open_main_window(ip, user)
+        try:
+            save_endpoint(user, ip)
+        except OSError as error:
+            self.append_log("Could not remember this connection: " + str(error))
         return False
 
     # ------------------------------------------------------------------
@@ -460,6 +447,7 @@ class OmniQuadApp:
         # app), so remove that connection first -- otherwise closing this
         # helper window would shut the program down.
         if self.start_window is not None:
+            self.password_entry.set_text("")
             try:
                 self.start_window.disconnect_by_func(Gtk.main_quit)
             except TypeError:
@@ -488,7 +476,20 @@ class OmniQuadApp:
 
         # A Paned widget splits the window into two resizable parts.
         pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        window.add(pane)
+        layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        window.add(layout)
+        layout.pack_start(pane, True, True, 0)
+        footer = Gtk.Box(spacing=6)
+        footer.set_border_width(6)
+        layout.pack_end(footer, False, False, 0)
+        for kind in ("containers", "topics"):
+            button = Gtk.Button(label="Export " + kind + " CSV…")
+            button.connect("clicked", self.on_export_csv, kind)
+            footer.pack_start(button, False, False, 0)
+        self.reconnect_button = Gtk.Button(label="Reconnect…")
+        self.reconnect_button.set_no_show_all(True)
+        self.reconnect_button.connect("clicked", self.on_reconnect)
+        footer.pack_end(self.reconnect_button, False, False, 0)
 
         # -- LEFT: a vertical split: terminal on top, log area below -----
         # Paned = a divider the user can drag; it starts at 50/50.
@@ -603,8 +604,11 @@ class OmniQuadApp:
 
     def on_ssh_child_exited(self, terminal, status, *args):
         """Called when the ssh process inside the terminal ends."""
+        if self.closed:
+            return
         self.session_ended = True
         self.controls.set_sensitive(False)
+        self.reconnect_button.show()
         if self.shutdown_was_sent:
             # The drone closed the connection on purpose: this is the
             # expected result of "shutdown now", not an error.
@@ -613,7 +617,7 @@ class OmniQuadApp:
         else:
             text = ("\n--- The ssh session has ended (exit status "
                     + str(status) + "). ---\n"
-                    "Close this window and connect again.\n")
+                    "Choose Reconnect to start a new session.\n")
         terminal.feed(text.encode())
 
     def on_terminal_button_press(self, terminal, event):
@@ -697,11 +701,15 @@ class OmniQuadApp:
 
     def on_ssh_spawn_done(self, terminal, pid, error, *args):
         """Called by VTE once the ssh process was (or was not) started."""
+        if self.closed:
+            return
         if error is not None:
             # The program could not even be started (e.g. sshpass missing).
             self.terminal.feed(
                 ("Could not start ssh: " + error.message + "\n").encode()
             )
+            self.session_ended = True
+            self.reconnect_button.show()
         else:
             # Connected! First thing: check the container state in the
             # background, so the "Enter container" button reflects
@@ -717,7 +725,8 @@ class OmniQuadApp:
                     self.on_check_containers(None)
                     return False
                 if time.monotonic() >= deadline:
-                    self.append_log("The SSH control connection is not ready. Close the window and reconnect.")
+                    self.append_log("The SSH control connection is not ready. Choose Reconnect to try again.")
+                    self.reconnect_button.show()
                     return False
                 return True
             GLib.timeout_add(100, wait_for_master)
@@ -735,6 +744,8 @@ class OmniQuadApp:
         Called either directly from button handlers or through
         GLib.idle_add from background threads.
         """
+        if self.closed:
+            return
         stamp = time.strftime("[%H:%M:%S] ")
         buffer = self.log_buffer
         buffer.insert(buffer.get_end_iter(), stamp + text[-MAX_LOG_CHARS:].rstrip() + "\n")
@@ -1032,6 +1043,8 @@ class OmniQuadApp:
 
     def demo_run(self, ssh_command, on_done):
         """MAIN THREAD (demo only): answer a command with simulated output."""
+        if self.session_ended:
+            return False
         success, returncode, output = self.demo_answer(ssh_command)
         self.append_log("[demo] $ " + ssh_command + "\n" + output)
         on_done(success, returncode, output)
@@ -1405,12 +1418,16 @@ class OmniQuadApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def on_shutdown_unconfirmed(self):
+        if self.closed:
+            return False
         self.append_log("Shutdown could not be confirmed. Check the onboard computer before retrying.")
         self.set_drone_buttons_enabled(True)
         return False
 
     def on_shutdown_sent(self):
         """MAIN THREAD: the shutdown command was sent."""
+        if self.closed:
+            return False
         self.shutdown_was_sent = True
         self.append_log("Shutdown command accepted.")
         # The drone is going down: no button may talk to it anymore.
@@ -1718,6 +1735,37 @@ class OmniQuadApp:
         if window in self.echo_windows:
             self.echo_windows.remove(window)
 
+    def on_export_csv(self, button, kind):
+        if kind == "topics":
+            columns = ("Topic",)
+            rows = [(row.get_child().get_text(),) for row in self.topics_listbox.get_children()
+                    if row.get_child_visible()]
+        else:
+            columns = ("Container", "Status")
+            rows = [tuple(label.get_text() for label in row.get_child().get_children())
+                    for row in self.container_listbox.get_children()]
+        if not rows:
+            self.append_log("No visible " + kind + " to export.")
+            return
+        dialog = Gtk.FileChooserDialog(title="Export visible " + kind, transient_for=self.main_window,
+                                       action=Gtk.FileChooserAction.SAVE)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.ACCEPT)
+        dialog.set_do_overwrite_confirmation(True)
+        dialog.set_current_name(("demo-" if self.demo_mode else "") + kind + ".csv")
+        try:
+            if dialog.run() == Gtk.ResponseType.ACCEPT:
+                path = dialog.get_filename()
+                export_csv(path, columns, rows)
+                self.append_log(f"Exported {len(rows)} rows to {path}")
+        except OSError as error:
+            self.append_log("Could not save CSV: " + str(error))
+        finally:
+            dialog.destroy()
+
+    def on_reconnect(self, button):
+        self.reconnect_requested = True
+        self.main_window.close()
+
     # ------------------------------------------------------------------
     # Closing the app cleanly
     # ------------------------------------------------------------------
@@ -1728,6 +1776,10 @@ class OmniQuadApp:
         remove the private temp folder with the control socket.
         """
         self.session_ended = True
+        self.closed = True
+        self.password = ""
+        for echo in self.echo_windows.copy():
+            echo.destroy()
         if self.control_socket:
             # Normal (connected) mode: politely close the master ssh.
             try:
@@ -1746,24 +1798,22 @@ class OmniQuadApp:
         return False  # allow the window to close
 
 
-def load_config_commands():
-    """Read commands.json (button definitions).  Stage 1 does not use the
-    buttons yet, but we check early that the file exists and is valid."""
+def main(demo=False):
     try:
-        with open(COMMANDS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError) as error:
-        print("Warning: could not read commands.json:", error)
-        return {"host_buttons": [], "terminal_buttons": []}
-
-
-def main():
-    # Ctrl+C in the launching terminal should also close the app.
-    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 2, Gtk.main_quit)
-
-    try:
-        app = OmniQuadApp()
-        Gtk.main()
+        load_button_styles()
+        while True:
+            app = OmniQuadApp(demo=demo)
+            demo = False
+            def close_window():
+                (app.main_window or app.start_window).close()
+                return True
+            interrupt = GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 2, close_window)
+            try:
+                Gtk.main()
+            finally:
+                GLib.source_remove(interrupt)
+            if not app.reconnect_requested:
+                break
     except Exception:
         # A programming error should never just vanish (especially when
         # the app is started from a desktop icon, where there is no

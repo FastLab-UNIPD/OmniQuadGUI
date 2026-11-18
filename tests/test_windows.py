@@ -13,6 +13,9 @@ class WindowsTests(unittest.TestCase):
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
         self.window = DiagnosticsWindow(self.root)
+        save = patch("windows_app.save_endpoint")
+        self.save_endpoint = save.start()
+        self.addCleanup(save.stop)
 
     def test_offline_navigation_and_no_connections(self):
         with patch("windows_app.subprocess.Popen", side_effect=AssertionError("unexpected SSH")):
@@ -26,9 +29,14 @@ class WindowsTests(unittest.TestCase):
             shown = self.window.table.get_children()
             self.assertEqual(len(shown), 1)
             self.assertEqual(self.window.table.item(shown[0], "values")[0], "/livox/lidar")
+            with patch("windows_app.filedialog.asksaveasfilename", return_value="demo.csv"), \
+                 patch("windows_app.export_csv") as export:
+                self.window.export_button.invoke()
+                export.assert_called_once_with("demo.csv", ("Topic",), [("/livox/lidar",)])
             self.window.actions[2].invoke()
             self.assertFalse(self.window.table.get_children())
             self.assertTrue(self.window.terminal.instate(["!disabled"]))
+            self.save_endpoint.assert_not_called()
 
     def test_request_completes_and_recovers_from_ssh_error(self):
         self.window.host.set("example.invalid")
@@ -52,3 +60,4 @@ class WindowsTests(unittest.TestCase):
                 else:
                     self.assertFalse(children)
                     self.assertEqual(self.window.status.get(), "Permission denied")
+        self.save_endpoint.assert_called_once()

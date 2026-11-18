@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Launch the native OmniQuadGUI interface for this desktop."""
 
+import argparse
 import os
 import sys
 
@@ -117,6 +118,9 @@ def relaunch_with_clean_environment():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="OmniQuadGUI desktop diagnostics")
+    parser.add_argument("--demo", action="store_true", help="open the offline demo directly")
+    args = parser.parse_args()
     if sys.platform == "win32":
         from windows_app import main as run
     else:
@@ -124,7 +128,7 @@ def main():
             relaunch_with_clean_environment()
         clean_own_environment()
         from gtk_app import main as run
-    run()
+    run(demo=args.demo)
 
 
 if __name__ == "__main__":

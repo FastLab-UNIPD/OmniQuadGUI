@@ -7,8 +7,69 @@ from unittest.mock import patch
 
 @unittest.skipUnless(sys.platform.startswith("linux") and os.getenv("DISPLAY"), "GTK display required")
 class GtkDemoTests(unittest.TestCase):
-    def test_demo_refresh_selection_and_disconnect(self):
+    def test_reconnect_opens_a_fresh_login(self):
+        import gtk_app
+        sessions = []
+        real_app = gtk_app.OmniQuadApp
+
+        def create(demo):
+            app = real_app(demo=demo)
+            sessions.append(app)
+            def interact():
+                if demo:
+                    app.on_ssh_child_exited(app.terminal, 0)
+                    app.reconnect_button.clicked()
+                else:
+                    app.start_window.close()
+                return False
+            gtk_app.GLib.idle_add(interact)
+            return app
+
+        with patch("gtk_app.OmniQuadApp", side_effect=create):
+            gtk_app.main(demo=True)
+        self.assertEqual(len(sessions), 2)
+        self.assertTrue(sessions[0].closed)
+        self.assertFalse(sessions[1].demo_mode)
+        self.assertEqual(sessions[1].password, "")
+
+    @unittest.skipUnless(os.getenv("OMNIQUAD_TEST_SSH_CONFIG"), "requires isolated loopback SSH fixture")
+    def test_real_ssh_login_and_multiplexed_command(self):
         from gtk_app import GLib, OmniQuadApp
+        app = OmniQuadApp()
+        app.user_entry.set_text("root")
+        app.ip_entry.set_text("omni-loopback")
+        app.password_entry.set_text("unused-with-test-key")
+        context = GLib.MainContext.default()
+
+        def wait_for(predicate):
+            deadline = time.monotonic() + 18
+            while not predicate() and time.monotonic() < deadline:
+                context.iteration(False)
+                time.sleep(0.005)
+            self.assertTrue(predicate(), app.status_label.get_text())
+
+        app.connect_button.clicked()
+        wait_for(lambda: app.main_window is not None and app.controls.get_sensitive())
+        self.assertTrue(os.path.exists(app.control_socket))
+        self.addCleanup(app.main_window.destroy)
+        answer = []
+        command = "printf '%s' \"$SSH_CONNECTION\""
+        app.run_ssh_background(command, lambda *args: answer.append(args))
+        wait_for(lambda: bool(answer))
+        self.assertEqual(answer[0][:2], (True, 0))
+        self.assertEqual(answer[0][2].split()[0], "127.0.0.1")
+        app.run_ssh_background(command, lambda *args: answer.append(args))
+        wait_for(lambda: len(answer) == 2)
+        self.assertEqual(answer[0], answer[1])
+        app.type_in_terminal("exit")
+        wait_for(lambda: app.session_ended)
+        self.assertTrue(app.reconnect_button.get_visible())
+        with patch("gtk_app.Gtk.main_quit"):
+            app.on_main_window_closed(app.main_window, None)
+        self.assertFalse(os.path.exists(app.ssh_tmp_dir))
+
+    def test_demo_refresh_selection_and_disconnect(self):
+        from gtk_app import GLib, Gtk, OmniQuadApp
         context = GLib.MainContext.default()
 
         def until(predicate):
@@ -38,6 +99,11 @@ class GtkDemoTests(unittest.TestCase):
             visible = [row.get_child().get_text() for row in app.topics_listbox.get_children()
                        if row.get_child_visible()]
             self.assertEqual(visible, ["/livox/imu", "/livox/lidar"])
+            with patch("gtk_app.Gtk.FileChooserDialog") as chooser, patch("gtk_app.export_csv") as export:
+                chooser.return_value.run.return_value = Gtk.ResponseType.ACCEPT
+                chooser.return_value.get_filename.return_value = "demo.csv"
+                app.on_export_csv(None, "topics")
+                export.assert_called_once_with("demo.csv", ("Topic",), [("/livox/imu",), ("/livox/lidar",)])
             app.topic_filter.set_text("")
             app.list_topics_button.clicked()
             until(lambda: not app.topics_request)
@@ -48,6 +114,7 @@ class GtkDemoTests(unittest.TestCase):
             app.on_ssh_child_exited(app.terminal, 0)
             app.set_drone_buttons_enabled(True)
             self.assertFalse(app.controls.get_sensitive())
+            self.assertTrue(app.reconnect_button.get_visible())
             with patch("gtk_app.MAX_LOG_LINES", 3), patch("gtk_app.MAX_LOG_CHARS", 30):
                 app.append_log("old\n" * 15 + "latest")
                 buffer = app.log_buffer

@@ -21,7 +21,10 @@ python main.py
 The desktop window uses Python's Tkinter. Select **Offline demo** and click
 **Running containers** or **ROS topics** to try it immediately. No network
 connection or local Docker engine is required.
-Use **Filter by name** to narrow the displayed results locally.
+Use **Filter by name** to narrow the displayed results locally. **Export CSV**
+saves the visible rows with column headers. An active filter is preserved
+when refreshing the same list. To open the demo directly on either platform,
+run `python main.py --demo`.
 
 For live use, enter the SSH user and host, then choose **Open SSH terminal**.
 Windows OpenSSH handles the password prompt or SSH key, and asks you to verify
@@ -96,7 +99,7 @@ ROS sourced.
 - On success the main window opens with the drone's terminal embedded.
 
 ### Demo view (no drone needed)
-Log in with the **demo credentials** (default: user `demo`, password
+Click **Open offline demo**, or log in with the **demo credentials** (default: user `demo`, password
 `demo`, both changeable in `config.json`). The GUI opens normally —
 title shows **DEMO (not connected)** — but:
 
@@ -107,8 +110,16 @@ title shows **DEMO (not connected)** — but:
   sequences with a small pretend state, and the log area fills as
   usual. Perfect for trying the GUI before the drone is on your desk.
 
-The last successfully used IP is remembered in `config.json`.
-**The password is never saved anywhere** — you type it on every start.
+Ubuntu remembers the user and host after a successful SSH check. Windows
+remembers them after a successful background query. These two fields are
+stored in `%LOCALAPPDATA%\OmniQuadGUI\connection.json` on Windows and
+`$XDG_STATE_HOME/OmniQuadGUI/connection.json` on Ubuntu (default base
+`~/.local/state`). Removing this file restores the defaults from the repo.
+Login passwords stay in memory.
+
+After an Ubuntu SSH disconnect, the terminal and last results stay visible.
+Choose **Reconnect** to return to the login window. **Export containers CSV**
+and **Export topics CSV** save the displayed rows, including after disconnect.
 
 ## 3. Files in this folder
 
@@ -118,7 +129,7 @@ The last successfully used IP is remembered in `config.json`.
 | `gtk_app.py`      | Ubuntu interface, VTE terminal and container management. |
 | `windows_app.py`  | Native Windows diagnostics and SSH terminal launcher. |
 | `diagnostics.py`  | Shared settings, diagnostic commands and parsing. |
-| `config.json`     | Settings: user name, last-used IP, `dry_run` flag. Editable.   |
+| `config.json`     | Shared defaults for user, IP, demo credentials and `dry_run`. |
 | `commands.json`   | The button definitions (labels + commands). Data only.         |
 | `omniquadgui.png` | The app logo (login background, window + shortcut icon).       |
 | `launch.sh`       | Portable launcher script used by `OmniQuadGUI.desktop`; finds its own folder, installs the icon once, then starts the app. |
@@ -140,7 +151,7 @@ The last successfully used IP is remembered in `config.json`.
 ```
 
 - `user` — the login name on the drone.
-- `ip` — remembered automatically after a successful connect.
+- `ip` — initial host when there is no saved connection for this user.
 - `dry_run` — leave `true` for now: the shutdown button (stage 2) will
   *print what it would run* instead of actually shutting the drone down.
 - `demo_user` / `demo_password` — login that opens the GUI in demo mode
@@ -329,4 +340,7 @@ All three stages are complete.
 From the repository root, run `python -B -m unittest discover -s tests -v`.
 On Ubuntu, use the system Python with a display, or run
 `xvfb-run -a /usr/bin/python3 -B -m unittest discover -s tests -v`.
-The pull request checks exercise the GTK demo on Ubuntu 22.04 and 24.04.
+GitHub Actions runs the Windows GUI tests and exercises GTK on Ubuntu 22.04 and
+24.04. Inside each disposable Linux container, a separate integration test uses
+a loopback SSH server to check login, reuse of the master connection, and
+disconnect handling. Local test discovery skips this fixture automatically.

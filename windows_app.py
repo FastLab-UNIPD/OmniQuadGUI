@@ -1,15 +1,15 @@
 """Windows diagnostics window using Tk and the system OpenSSH client."""
 
-import json
 import os
 from pathlib import Path
 import queue
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
-from diagnostics import COMMANDS_FILE, CONTAINER_LIST, load_config, topic_list_command, topic_names
+from diagnostics import (CONTAINER_LIST, export_csv, load_commands, load_config,
+                         save_endpoint, topic_list_command, topic_names)
 
 
 def ssh_argv(user, host, command=None):
@@ -59,6 +59,7 @@ class DiagnosticsWindow:
         self.status = tk.StringVar(value="Connect once in the terminal to verify the host. The lists use SSH key authentication.")
         self.results = queue.Queue()
         self.rows = []
+        self.kind = None
         self.filter_text = tk.StringVar()
 
         target = ttk.LabelFrame(frame, text="SSH connection", padding=10)
@@ -89,6 +90,9 @@ class DiagnosticsWindow:
         search.pack(fill="x", pady=(0, 8))
         ttk.Label(search, text="Filter by name").pack(side="left", padx=(0, 8))
         ttk.Entry(search, textvariable=self.filter_text).pack(side="left", fill="x", expand=True)
+        self.export_button = ttk.Button(search, text="Export CSV…", command=self.export_visible)
+        self.export_button.pack(side="right", padx=(8, 0))
+        self.export_button.state(["disabled"])
         panel = ttk.Frame(frame)
         panel.pack(fill="both", expand=True)
         self.table = ttk.Treeview(panel, columns=("name", "status"), show="headings")
@@ -103,6 +107,8 @@ class DiagnosticsWindow:
             fill="x", pady=(8, 0))
 
     def change_mode(self):
+        self.kind = None
+        self.filter_text.set("")
         self.clear_results()
         self.status.set("Offline demo · simulated data" if self.demo.get() else "Ready")
         self.set_busy(False)
@@ -124,6 +130,9 @@ class DiagnosticsWindow:
 
     def query(self, kind):
         self.clear_results()
+        if self.kind != kind:
+            self.filter_text.set("")
+        self.kind = kind
         self.table["displaycolumns"] = ("name",) if kind == "topics" else ("name", "status")
         self.table.heading("name", text="ROS topic" if kind == "topics" else "Container")
         if self.demo.get():
@@ -133,7 +142,7 @@ class DiagnosticsWindow:
         try:
             command = CONTAINER_LIST
             if kind == "topics":
-                command = topic_list_command(json.loads(COMMANDS_FILE.read_text(encoding="utf-8")))
+                command = topic_list_command(load_commands())
             args = ssh_argv(self.user.get(), self.host.get(), command)
         except (OSError, ValueError) as error:
             self.status.set(str(error))
@@ -155,6 +164,11 @@ class DiagnosticsWindow:
             return
         self.set_busy(False)
         self.show_result(kind, success, output)
+        if success:
+            try:
+                save_endpoint(self.user.get().strip(), self.host.get().strip())
+            except OSError:
+                self.status.set(self.status.get() + " · Could not save connection preferences")
 
     def show_result(self, kind, success, output):
         if not success:
@@ -171,7 +185,7 @@ class DiagnosticsWindow:
 
     def clear_results(self):
         self.rows = []
-        self.filter_text.set("")
+        self.render_rows()
 
     def render_rows(self):
         self.table.delete(*self.table.get_children())
@@ -180,9 +194,30 @@ class DiagnosticsWindow:
             if query not in row[0].casefold():
                 continue
             self.table.insert("", "end", values=row)
+        self.export_button.state(["!disabled" if self.table.get_children() else "disabled"])
+
+    def export_visible(self):
+        rows = [self.table.item(item, "values") for item in self.table.get_children()]
+        if not rows:
+            return
+        prefix = "demo-" if self.demo.get() else ""
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Export visible rows", defaultextension=".csv",
+            initialfile=prefix + self.kind + ".csv", filetypes=[("CSV", "*.csv")])
+        if path:
+            try:
+                columns = ("Topic",) if self.kind == "topics" else ("Container", "Status")
+                export_csv(path, columns, rows)
+                self.status.set(f"Exported {len(rows)} rows to {path}")
+            except OSError as error:
+                self.status.set(f"Could not save CSV: {error}")
 
 
-def main():
+def main(demo=False):
     root = tk.Tk()
-    DiagnosticsWindow(root)
+    app = DiagnosticsWindow(root)
+    if demo:
+        app.demo.set(True)
+        app.change_mode()
+        app.query("containers")
     root.mainloop()
