@@ -253,13 +253,25 @@ program that runs on **this computer**, not on the drone:
 - It **starts together with OmniQuadGUI** (already at the login window,
   `"autostart": true`) and keeps running across *Reconnect*. When you close
   the program, it is stopped cleanly (Ctrl+C first, harder only if needed).
+  This also happens when the program is ended with `kill` or its terminal
+  is closed.
+- If a bridge is **already running** when it starts (for example after
+  the program crashed, or one started by hand in a terminal), that bridge
+  is stopped first and a fresh one is started. This only touches bridges
+  of your own user; the log shows which PIDs were restarted.
 - The status label is green (**RUNNING · ws://localhost:8765**, the address
   to open in Foxglove) or red (**NOT RUNNING**), and one button starts or
   stops it. This card stays usable even without a drone connection.
+- The **refresh button** on the label checks the bridge again and writes
+  what it found to the log: running and listening on port 8765; started but
+  the port is not open (yet); a bridge **not started by this app** is
+  running (grey label *RUNNING, NOT STARTED HERE*; press *Start* to restart
+  it from the app); or the port is taken by another program. The check
+  only looks; it never connects to the bridge or changes anything.
 - Its output appears in the **Background command log** with the prefix
   `[foxglove]` (including what it printed before the main window opened).
   Common problems come with a tip: bridge not installed, ROS not found, or
-  port 8765 already in use (another bridge is already running).
+  port 8765 already in use by a different program or another user.
 - ROS setup: the app itself runs without ROS (that keeps the window from
   freezing), so the bridge is started through `bash -i`, which reads your
   `~/.bashrc` — the same ROS setup (and `ROS_DOMAIN_ID`) as in a normal

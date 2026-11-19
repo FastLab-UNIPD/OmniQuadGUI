@@ -124,6 +124,36 @@ class GtkDemoTests(unittest.TestCase):
         self.assertIn("[foxglove] $ sleep 30", app.log_buffer.get_text(
             *app.log_buffer.get_bounds(), False))
 
+    def test_refresh_checks_the_local_bridge(self):
+        from gtk_app import GLib, OmniQuadApp
+        from local_bridge import LocalBridge
+        bridge = LocalBridge("fake_bridge", "sleep 30")
+        bridge.ros_setup = ""
+        self.addCleanup(bridge.stop, True)
+        app = OmniQuadApp(demo=True, local_bridge=bridge)
+        self.addCleanup(self.close_app, app)
+        context = GLib.MainContext.default()
+
+        def log():
+            return app.log_buffer.get_text(*app.log_buffer.get_bounds(), False)
+
+        def refresh_until(text):
+            app.local_bridge_status.refresh_button.clicked()
+            deadline = time.monotonic() + 8
+            while text not in log() and time.monotonic() < deadline:
+                context.iteration(False)
+                time.sleep(0.002)
+            self.assertIn(text, log())
+
+        self.assertIsNotNone(app.local_bridge_status.refresh_button)
+        refresh_until("[foxglove] fake_bridge is not running.")
+        self.assertEqual(app.local_bridge_status.state_label.get_text(), "NOT RUNNING")
+        bridge.start()
+        refresh_until("[foxglove] fake_bridge is running (PID %d)." % bridge.process.pid)
+        self.assertTrue(app.local_bridge_status.state_label.get_text().startswith("RUNNING ·"))
+        # The rotor is gone again: the refresh button is back.
+        self.assertEqual(app.local_bridge_status.action.get_visible_child_name(), "refresh")
+
     def test_reconnect_opens_a_fresh_login(self):
         import gtk_app
         sessions = []

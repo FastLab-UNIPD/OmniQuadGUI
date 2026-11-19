@@ -18,6 +18,14 @@ How it is stopped:
   `ros2 launch` AND the nodes it started.  First Ctrl+C (SIGINT, the
   polite way: ros2 launch shuts its nodes down cleanly), then SIGTERM,
   then SIGKILL if it still refuses to end.
+
+A bridge that is already running:
+  If an earlier OmniQuadGUI was killed hard (or a bridge was started by
+  hand in a terminal), a bridge can still be running when we start.
+  Ours would then fail with "address already in use".  So before every
+  start, copies of the program that belong to this user but were not
+  started by us are looked for in /proc, stopped (same signal order as
+  above) and then a fresh one is started -- a "restart".
 """
 
 import collections
@@ -28,6 +36,7 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.parse
 
 import gi
 gi.require_version("GLib", "2.0")
@@ -43,6 +52,116 @@ BASH_NOISE = (
 
 # Seconds to wait for a clean stop before using the next, harder signal.
 STOP_GRACE_SECONDS = 5
+
+# Stopping a bridge that was ALREADY running happens before ours starts
+# and blocks the app meanwhile, so it uses shorter waits per signal.
+LEFTOVER_STOP_STEPS = ((signal.SIGINT, 3), (signal.SIGTERM, 2), (signal.SIGKILL, 1))
+
+
+def is_same_program(argv, command, name):
+    """Is the process with this argv a copy of our program?
+
+    True if
+      * the command line contains `command` (the first word may have a
+        path, e.g. "/opt/ros/jazzy/bin/ros2 launch foxglove_bridge ..."
+        run by python3), or
+      * the program itself is called `name` (the node executable
+        ".../lib/foxglove_bridge/foxglove_bridge").
+    """
+    if not argv:
+        return False
+    if name and os.path.basename(argv[0]) == name:
+        return True
+    words = shlex.split(command)
+    if not words:
+        return False
+    first, rest = os.path.basename(words[0]), words[1:]
+    for i, arg in enumerate(argv):
+        if (os.path.basename(arg) == first
+                and argv[i + 1:i + 1 + len(rest)] == rest):
+            return True
+    return False
+
+
+def read_process(pid):
+    """(argv, uid, process group, state letter) of a pid, or None if gone."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            raw = f.read()
+        with open("/proc/%d/stat" % pid) as f:
+            stat = f.read()
+        uid = os.stat("/proc/%d" % pid).st_uid
+    except OSError:
+        return None
+    argv = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+    # stat is "pid (name) STATE ppid pgrp ..."; the name may contain spaces.
+    fields = stat[stat.rfind(")") + 2:].split()
+    return argv, uid, int(fields[2]), fields[0]
+
+
+def all_pids():
+    return [int(entry) for entry in os.listdir("/proc") if entry.isdigit()]
+
+
+def pid_alive(pid):
+    """Running (a finished "zombie" process counts as gone)."""
+    info = read_process(pid)
+    return info is not None and info[3] not in ("Z", "X")
+
+
+def port_of(address):
+    """8765 for "ws://localhost:8765" (None if the address has no port)."""
+    try:
+        return urllib.parse.urlparse(address).port
+    except ValueError:
+        return None
+
+
+def port_listeners(port):
+    """Who listens on TCP `port` on this computer?
+
+    Returns (listening, pids).  `listening` comes from /proc/net/tcp(6),
+    so nothing connects to the bridge (no noise in its log).  `pids` are
+    the processes holding that socket -- only those of our own user can
+    be seen, so it can be empty even when `listening` is True.
+    """
+    inodes = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table) as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            # fields: sl, local "ADDR:PORT" (hex), remote, state (0A = LISTEN), ..., inode
+            if len(fields) > 9 and fields[3] == "0A" \
+                    and int(fields[1].rsplit(":", 1)[1], 16) == port:
+                inodes.add(fields[9])
+    wanted = {"socket:[%s]" % inode for inode in inodes}
+    pids = []
+    if wanted:
+        for pid in all_pids():
+            try:
+                fds = os.listdir("/proc/%d/fd" % pid)
+            except OSError:
+                continue                 # gone, or another user's process
+            for fd in fds:
+                try:
+                    if os.readlink("/proc/%d/fd/%s" % (pid, fd)) in wanted:
+                        pids.append(pid)
+                        break
+                except OSError:
+                    continue
+    return bool(inodes), pids
+
+
+def program_name(pid):
+    """Short name of a process, e.g. "foxglove_bridge" ("?" if unknown)."""
+    info = read_process(pid)
+    if info is None or not info[0]:
+        return "?"
+    return os.path.basename(info[0][0])
 
 
 def find_ros_setup(configured=""):
@@ -80,9 +199,10 @@ class LocalBridge:
     opens later can still show what happened before.
     """
 
-    def __init__(self, name, command, ros_setup=""):
+    def __init__(self, name, command, ros_setup="", address=""):
         self.name = name
         self.command = command
+        self.port = port_of(address)      # checked by check(); None = skip
         self.ros_setup = find_ros_setup(ros_setup)
         self.process = None
         self.stopping = False             # True after we asked it to stop
@@ -95,9 +215,14 @@ class LocalBridge:
         return self.process is not None and self.process.poll() is None
 
     def start(self):
-        """Start the program (does nothing if it already runs)."""
+        """Start the program (does nothing if it already runs).
+
+        A copy that is already running but was not started by us is
+        stopped first, so the new one gets the port (see module doc).
+        """
         if self.is_running():
             return
+        self.stop_leftovers()
         env = os.environ.copy()
         # Print every line at once (no buffering), and without colour
         # codes, so the log shows clean text as it happens.
@@ -125,6 +250,118 @@ class LocalBridge:
         threading.Thread(target=self.read_output, args=(self.process,),
                          daemon=True).start()
         self.notify_state()
+
+    def check(self):
+        """A fresh look at the bridge, for the refresh button.
+
+        Only reads /proc, changes nothing, and is safe to run in a
+        background thread.  Returns a dict:
+          own_pid    -- pid of the copy WE started, or None
+          others     -- pids of copies not started by us
+          listening  -- something listens on the port (None = no port known)
+          port_pids  -- who holds the port (own user's processes only)
+        """
+        process = self.process
+        own_pid = process.pid if process is not None and process.poll() is None else None
+        listening, port_pids = (None, [])
+        if self.port is not None:
+            listening, port_pids = port_listeners(self.port)
+        return {"own_pid": own_pid, "others": self.find_leftovers(),
+                "listening": listening, "port_pids": port_pids}
+
+    def describe_check(self, result):
+        """(state, label text or None, log message) for a check() result.
+
+        state is "running", "stopped" or "unknown" (as BridgeStatus uses).
+        """
+        port = self.port
+        on_port = (" and listens on port %d" % port) if port else ""
+        holders = ", ".join("%s (PID %d)" % (program_name(pid), pid)
+                            for pid in result["port_pids"])
+        others = ", ".join(map(str, result["others"]))
+        if result["own_pid"] is not None:
+            if result["listening"] is False:
+                return ("unknown", "STARTED, PORT %d NOT OPEN" % port,
+                        "%s runs (PID %d) but nothing listens on port %d. "
+                        "It may still be starting; if this stays, see the "
+                        "lines above for the reason." % (self.name, result["own_pid"], port))
+            message = "%s is running (PID %d)%s." % (self.name, result["own_pid"], on_port)
+            if others:
+                message += (" Another copy not started by this app is also "
+                            "running (PID " + others + ").")
+            return "running", None, message
+        if others:
+            return ("unknown", "RUNNING, NOT STARTED HERE",
+                    "A %s not started by this app is running (PID %s)%s. "
+                    "Press Start to restart it from here."
+                    % (self.name, others, on_port if result["listening"] else ""))
+        if result["listening"]:
+            return ("stopped", None,
+                    "%s is not running, but port %d is already used by %s. "
+                    "The bridge cannot start until that program ends."
+                    % (self.name, port, holders or "a program of another user"))
+        return "stopped", None, self.name + " is not running."
+
+    def find_leftovers(self):
+        """PIDs of copies of our program that run for this user, not by us."""
+        own_group = None
+        if self.process is not None:
+            own_group = self.process.pid          # we start it as group leader
+        me = os.getpid()
+        found = []
+        for pid in all_pids():
+            info = read_process(pid)
+            if info is None or pid == me:
+                continue
+            argv, uid, group, state = info
+            if (uid == os.getuid() and group != own_group
+                    and state not in ("Z", "X")
+                    and is_same_program(argv, self.command, self.name)):
+                found.append(pid)
+        return found
+
+    def stop_leftovers(self):
+        """Stop already-running copies (Ctrl+C, then SIGTERM, then SIGKILL).
+
+        A copy that leads its own process group (like the bridge an
+        earlier OmniQuadGUI started) is stopped as a whole group, so
+        the nodes it started go too.  Returns True if none is left.
+        """
+        pids = self.find_leftovers()
+        if not pids:
+            return True
+        self.emit("A " + self.name + " is already running (PID "
+                  + ", ".join(map(str, pids)) + "); restarting it.")
+        groups = set()
+        for pid in pids:
+            info = read_process(pid)
+            if info is not None and info[2] == pid and pid != os.getpgrp():
+                groups.add(pid)
+        # Watch everything in those groups, not only the matching pids.
+        watched = set(pids)
+        for pid in all_pids():
+            info = read_process(pid)
+            if info is not None and info[2] in groups:
+                watched.add(pid)
+        for sig, seconds in LEFTOVER_STOP_STEPS:
+            for pid in watched:
+                try:
+                    if pid in groups:
+                        os.killpg(pid, sig)
+                    else:
+                        os.kill(pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                watched = {pid for pid in watched if pid_alive(pid)}
+                if not watched:
+                    self.emit("The old " + self.name + " was stopped.")
+                    return True
+                time.sleep(0.05)
+        self.emit("Could not stop the old " + self.name + " (PID "
+                  + ", ".join(map(str, sorted(watched))) + ").")
+        return False
 
     def stop(self, wait=False):
         """Ask the program to end.
@@ -243,8 +480,10 @@ class LocalBridge:
             return ("Tip: ROS 2 was not found. Source ROS in ~/.bashrc, or set "
                     "\"ros_setup\" in config.json to your setup.bash.")
         if "address already in use" in text:
-            return ("Tip: another Foxglove bridge is probably already running "
-                    "(port in use). Stop it, then start this one again.")
+            return ("Tip: another program already uses this port. Bridges of "
+                    "your own user are restarted automatically, so it is "
+                    "probably a different program or another user's bridge "
+                    "(find it with: ss -ltnp).")
         return ""
 
     def notify_state(self):

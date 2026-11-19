@@ -563,8 +563,7 @@ class BridgeStatus(Gtk.Box):
     there instead.
 
     icon:         which images/icons/ picture to show at the left.
-    on_refresh:   None = no refresh button (e.g. for a local program,
-                  whose state is always known).
+    on_refresh:   None = no refresh button.
     running_text: the second line while running (e.g. with an address).
     """
 
@@ -621,14 +620,19 @@ class BridgeStatus(Gtk.Box):
         self.pack_end(self.action, False, False, 0)
         self.set_state("unknown")
 
-    def set_state(self, state):
-        """state: "running", "stopped" or "unknown"."""
+    def set_state(self, state, text=None):
+        """state: "running", "stopped" or "unknown".
+
+        text: a different second line (e.g. "RUNNING, NOT STARTED HERE");
+        None = the usual text for that state.
+        """
         context = self.get_style_context()
         for old in self.STATE_TEXT:
             context.remove_class("oq-bridge-" + old)
         context.add_class("oq-bridge-" + state)
-        self.state_label.set_text(
-            self.running_text if state == "running" else self.STATE_TEXT[state])
+        if text is None:
+            text = self.running_text if state == "running" else self.STATE_TEXT[state]
+        self.state_label.set_text(text)
         if self.icons.get(state) is not None:
             self.icon.set_from_gicon(self.icons[state], Gtk.IconSize.BUTTON)
             self.icon.set_pixel_size(18)

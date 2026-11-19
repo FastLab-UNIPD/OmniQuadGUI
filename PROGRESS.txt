@@ -185,8 +185,21 @@ BEHAVIOUR / ARCHITECTURE
   on_output (-> log, prefix "[foxglove]"), keeps the last 300 in
   recent_lines (replayed when a main window opens), and reports the end
   (on_state_changed). Plain-English tips for: package not found, ros2
-  not found, address already in use. The card (BridgeStatus with no
-  refresh button, Start/Stop Gtk.Stack) is NOT in self.controls, so it
+  not found, address already in use. Before every start(),
+  stop_leftovers() scans /proc for this user's copies NOT started by us
+  (is_same_program: argv contains the command, first word compared by
+  basename, or argv[0] basename == name; group leaders are signalled as
+  a whole group) and stops them with LEFTOVER_STOP_STEPS (SIGINT 3 s,
+  SIGTERM 2 s, SIGKILL 1 s; zombies count as gone), then starts fresh.
+  main() turns SIGINT, SIGTERM and SIGHUP into a normal window close,
+  so `finally` still stops the bridge. Refresh button on the card:
+  on_check_local_bridge runs LocalBridge.check() in a thread (read-only:
+  own pid, find_leftovers(), port_listeners(port) from /proc/net/tcp(6)
+  + /proc/*/fd, so it never connects to the bridge); describe_check()
+  turns it into (state, label text, log line). BridgeStatus.set_state
+  takes an optional text ("RUNNING, NOT STARTED HERE", grey). If the
+  bridge started/ended during the check, the live state wins. The
+  card (BridgeStatus, Start/Stop Gtk.Stack) is NOT in self.controls, so it
   stays usable while drone controls are disabled / disconnected.
   self.controls is a WidgetGroup(host_card, bottom row) - only the
   drone sections. Verified on this PC: listening on :8765 after ~1.2 s,
@@ -267,8 +280,9 @@ OPEN ITEMS
 - foxglove_bridge listens on 0.0.0.0:8765 (all interfaces) by default;
   pass address:=127.0.0.1 in the command if it must be local-only.
 - If the app is killed hard (SIGKILL / crash of Python itself), the
-  bridge keeps running (own process group); the next start then reports
-  "address already in use" with a tip.
+  bridge keeps running (own process group) until the next app start,
+  which restarts it (stop_leftovers). Verified on this PC: a stuck
+  bridge was replaced at start, and `kill <app pid>` left nothing.
 
 HISTORY (short)
 ---------------

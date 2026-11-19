@@ -3,6 +3,7 @@
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -71,7 +72,8 @@ def create_local_bridge(commands, config):
     local = commands.get("local_bridge")
     if not local:
         return None
-    return LocalBridge(local["name"], local["command"], config.get("ros_setup", ""))
+    return LocalBridge(local["name"], local["command"], config.get("ros_setup", ""),
+                       local.get("address", ""))
 
 
 class WidgetGroup:
@@ -1091,13 +1093,15 @@ class OmniQuadApp:
         """The FOXGLOVE BRIDGE card (top row, next to Drone host).
 
             FOXGLOVE BRIDGE
-            [~] foxglove_bridge
+            [~] foxglove_bridge                  (refresh)
                 RUNNING · ws://localhost:8765
             [ Stop Foxglove bridge ]
 
         Same look as the Drone host card: a status label (green running /
-        red stopped) and ONE Start/Stop button.  No refresh button: the
-        app started the program itself, so it always knows its state.
+        red stopped) and ONE Start/Stop button.  The label follows the
+        program the app started; the refresh button looks closer (is the
+        port really open?  is a copy running that the app did not
+        start?) and explains the result in the log.
         Returns None if commands.json has no "local_bridge" section.
         """
         if self.local_bridge is None:
@@ -1109,6 +1113,9 @@ class OmniQuadApp:
         address = local.get("address", "")
         self.local_bridge_status = BridgeStatus(
             self.local_bridge.name, icon="broadcast",
+            refresh_tooltip="Check the " + local.get("title", "local bridge")
+                            + " (process and port)",
+            on_refresh=self.on_check_local_bridge,
             running_text="RUNNING · " + address if address else "RUNNING")
         if address:
             self.local_bridge_status.set_tooltip_text(
@@ -1156,6 +1163,32 @@ class OmniQuadApp:
 
     def on_start_local_bridge(self, button):
         self.local_bridge.start()
+
+    def on_check_local_bridge(self, button):
+        """Refresh button: look at the bridge (in the background)."""
+        self.local_bridge_status.set_checking(True)
+        bridge = self.local_bridge
+
+        def work():
+            result = bridge.check()
+            GLib.idle_add(self.on_local_bridge_checked, result)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_local_bridge_checked(self, result):
+        """MAIN THREAD: show what the refresh check found."""
+        if self.closed:
+            return False
+        if self.local_bridge.stopping and self.local_bridge.is_running():
+            return False          # a Stop is in progress; it updates the card
+        # It may have started or ended while we looked: trust "now".
+        if (result["own_pid"] is not None) != self.local_bridge.is_running():
+            self.update_local_bridge_widgets()
+            return False
+        state, text, message = self.local_bridge.describe_check(result)
+        self.local_bridge_status.set_checking(False)
+        self.local_bridge_status.set_state(state, text)
+        self.show_local_bridge_output(message)
+        return False
 
     def on_stop_local_bridge(self, button):
         # Stopping takes a moment (ros2 launch shuts its nodes down):
@@ -2224,11 +2257,17 @@ def main(demo=False):
             def close_window():
                 (app.main_window or app.start_window).close()
                 return True
-            interrupt = GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 2, close_window)
+            # Ctrl+C (SIGINT), `kill` (SIGTERM) and a closed terminal
+            # (SIGHUP) all close the window the normal way, so the
+            # `finally` below still stops the Foxglove bridge.  (Without
+            # this, SIGTERM ended Python at once and left it running.)
+            handlers = [GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, close_window)
+                        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)]
             try:
                 Gtk.main()
             finally:
-                GLib.source_remove(interrupt)
+                for handler in handlers:
+                    GLib.source_remove(handler)
             if not app.reconnect_requested:
                 break
     except Exception as error:
