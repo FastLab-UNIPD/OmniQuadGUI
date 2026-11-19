@@ -50,6 +50,9 @@ FILES
 - launch.sh        portable launcher: cd to own folder, install
                    images/omniquadgui.png once into
                    ~/.local/share/icons/hicolor/256x256/apps, exec main.py.
+- OmniQuadGUI.desktop  double-click launcher inside the folder; passes its
+                   own path (%k) to bash, which runs launch.sh next to it.
+                   Icon=omniquadgui (theme name installed by launch.sh).
 - images/          omniquadgui.png / .svg (logo); icons/*.svg (original
                    24x24 line icons drawn in "currentColor").
 - tests/           test_gtk.py (GTK demo tests + optional loopback SSH
@@ -243,17 +246,17 @@ LESSONS (do not regress)
   launcher.
 - VTE 0.68 (Ubuntu 22.04) has no get_text_format(); anything reading the
   terminal screen must fall back to get_text().
-- Portable .desktop launcher: %k is only filled by real launchers
-  (Files / GNOME); `gio launch` leaves it empty. The Exec line must pass
-  desktop-file-validate: Exec=bash -c 'cd "$(dirname "%k")" && exec
-  ./launch.sh', Icon=omniquadgui.
+- Portable .desktop launcher: the Exec line must pass
+  desktop-file-validate, which rejects single quotes and field codes
+  inside quotes. Pass %k as a separate argument instead:
+  Exec=bash -c "exec \\"\\$(dirname \\"\\$1\\")/launch.sh\\"" OmniQuadGUI %k
+  (works from Files and from `gio launch`). Icon=omniquadgui.
+- A copy of the launcher OUTSIDE the folder (e.g. on the Desktop) can't
+  use %k; it finds the app via
+  "$(xdg-user-dir DESKTOP)/OmniQuad_Stuff/OmniQuadGUI/launch.sh".
 
 OPEN ITEMS
 ----------
-- OmniQuadGUI.desktop (the double-click launcher) is MISSING from the
-  folder (it was never in git; it disappeared during Nov 2026). README
-  and launch.sh still refer to it. Recreate it (portable version, see
-  LESSONS) if the user wants the launcher back.
 - Topic listing via `bash -ic` (PR #1) should be confirmed on the real
   drone; the older non-interactive docker exec variant had failed there
   because it had no ROS environment.

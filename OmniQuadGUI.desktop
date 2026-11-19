@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=OmniQuadGUI
+Comment=Connect to the drone computer over SSH and manage containers / ROS topics
+Exec=bash -c "exec \\"\\$(dirname \\"\\$1\\")/launch.sh\\"" OmniQuadGUI %k
+Icon=omniquadgui
+Terminal=false
+Categories=Development;

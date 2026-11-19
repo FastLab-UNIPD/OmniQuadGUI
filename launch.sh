@@ -5,7 +5,9 @@
 # from there, no matter where the folder is copied to or which user
 # runs it.  Nothing in here contains a home-directory path.
 #
-# Used by OmniQuadGUI.desktop (the "launcher icon" inside this folder).
+# Used by OmniQuadGUI.desktop (the double-click launcher icon inside this
+# folder), which passes its own location to bash and runs this script
+# from next to it.
 
 # Find the folder this script itself lives in, and go there.
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
