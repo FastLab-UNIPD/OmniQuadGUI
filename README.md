@@ -5,8 +5,16 @@ onboard computer of a drone (Radxa Rock 5B, ROS 2, Docker) for container
 and ROS diagnostics, with an embedded terminal, container management and
 ROS topic tools.
 
-**It does not control flight.** Use it only while the drone sits on the desk,
-with the battery disconnected or rotors removed.
+![OmniQuadGUI main window in demo mode: drone terminal, background command log, Drone host and Foxglove bridge status cards, diagnostics buttons and ROS topic list](images/OmniQuadGUI_screenshot.png)
+
+**It does not control flight.** It cannot arm, steer or land the drone. What
+it can do is read data from the drone remotely, **also while it is flying**:
+listing and echoing ROS topics, the diagnostics checks and the bridge status
+only read data on the onboard computer.
+
+During a flight, do **not** use *Stop Fast-LIO container* or *Shutdown*: they
+stop the odometry bridge or power off the onboard computer the flight depends
+on. Use them only with the drone on the ground.
 
 ---
 
@@ -109,7 +117,7 @@ saves the displayed topics, including after disconnect.
 | `diagnostics.py`  | Settings, command definitions, topic parsing and CSV export. |
 | `config.json`     | Shared defaults for user, IP, demo credentials and `dry_run`. |
 | `commands.json`   | The button definitions (labels, icons + commands). Data only.  |
-| `images/`         | The app logo: `omniquadgui.png` (login background, window + shortcut icon) and `omniquadgui.svg` (vector source of the PNG). |
+| `images/`         | The app logo: `omniquadgui.png` (login background, window + shortcut icon) and `omniquadgui.svg` (vector source of the PNG); `OmniQuadGUI_screenshot.png` (the main window in demo mode, shown at the top of this README). |
 | `images/icons/`   | The button icons (simple SVG line drawings, one file each). They draw in `currentColor`, which the app replaces with the colour each button needs. |
 | `launch.sh`       | Portable launcher script used by `OmniQuadGUI.desktop`; finds its own folder, installs the icon once, then starts the app. |
 | `OmniQuadGUI.desktop` | The double-clickable launcher icon inside the folder (portable: no user name or absolute path). |

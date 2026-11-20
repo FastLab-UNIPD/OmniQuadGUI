@@ -10,7 +10,9 @@ OmniQuadGUI: a Python 3 / GTK 3 desktop app, UBUNTU ONLY (22.04 / 24.04),
 with an embedded VTE terminal that connects over SSH to a drone's
 onboard computer (Radxa Rock 5B, ROS 2, Docker). It starts/stops the
 px4_fastlio_bridge container and inspects ROS topics. It does NOT
-control flight.
+control flight, but it may be used to READ data during a flight (topics,
+echo, diagnostics, status); README warns not to Stop the container or
+Shut down while flying.
 
 User: mechanical engineering student with basic Python. Code must stay
 simple, readable, heavily commented, no advanced patterns. Error
