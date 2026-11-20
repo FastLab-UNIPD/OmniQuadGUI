@@ -5,7 +5,9 @@
 # from there, no matter where the folder is copied to or which user
 # runs it.  Nothing in here contains a home-directory path.
 #
-# Used by OmniQuadGUI.desktop (the "launcher icon" inside this folder).
+# Used by OmniQuadGUI.desktop (the double-click launcher icon inside this
+# folder), which passes its own location to bash and runs this script
+# from next to it.
 
 # Find the folder this script itself lives in, and go there.
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,9 +18,9 @@ cd "$APP_DIR" || exit 1
 # rights.  (Icon=omniquadgui in the .desktop file is looked up there.)
 ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 ICON_TARGET="$ICON_DIR/omniquadgui.png"
-if [ -f omniquadgui.png ] && [ ! -f "$ICON_TARGET" ]; then
+if [ -f images/omniquadgui.png ] && [ ! -f "$ICON_TARGET" ]; then
     mkdir -p "$ICON_DIR" 2>/dev/null
-    cp omniquadgui.png "$ICON_TARGET" 2>/dev/null
+    cp images/omniquadgui.png "$ICON_TARGET" 2>/dev/null
     # Refresh the icon cache so the new icon is found immediately.
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" \

@@ -1,45 +1,14 @@
 # OmniQuadGUI
 
-A desktop app that connects over SSH to the onboard computer of a
-drone (Radxa Rock 5B, ROS 2, Docker) for container and ROS diagnostics. Ubuntu includes an embedded terminal and
-container management. Windows includes a native diagnostics window and a
-separate interactive SSH terminal.
+A desktop app for **Ubuntu (22.04 / 24.04)** that connects over SSH to the
+onboard computer of a drone (Radxa Rock 5B, ROS 2, Docker) for container
+and ROS diagnostics, with an embedded terminal, container management and
+ROS topic tools.
 
 **It does not control flight.** Use it only while the drone sits on the desk,
 with the battery disconnected or rotors removed.
 
 ---
-
-| Desktop capability | Windows | Ubuntu 22.04 / 24.04 |
-| --- | --- | --- |
-| Offline demo, list containers and ROS topics, filter and export CSV | Yes | Yes |
-| Interactive SSH | Separate OpenSSH terminal | Embedded VTE terminal |
-| Authentication for background queries | Existing SSH key or agent | Reuses the logged-in master connection |
-| Container lifecycle, echo windows and shutdown controls | Via manual SSH commands | Dedicated GUI controls |
-
-## Windows with an existing Conda environment
-
-From the repository folder in your activated Conda prompt, run:
-
-```powershell
-python main.py
-```
-
-The desktop window uses Python's Tkinter. Select **Offline demo** and click
-**Running containers** or **ROS topics** to try it immediately. No network
-connection or local Docker engine is required.
-Use **Filter by name** to narrow the displayed results locally. **Export CSV**
-saves the visible rows with column headers. An active filter is preserved
-when refreshing the same list. To open the demo directly on either platform,
-run `python main.py --demo`.
-
-For live use, enter the SSH user and host, then choose **Open SSH terminal**.
-Windows OpenSSH handles the password prompt or SSH key, and asks you to verify
-a new host. The two list buttons run read-only queries in the background.
-They require a previously verified host and a working SSH key or agent.
-If you use password authentication, you can run commands in the interactive
-terminal. Container start/stop, the embedded terminal and shutdown controls
-are available in the Ubuntu interface.
 
 ## Install on Ubuntu
 
@@ -58,8 +27,10 @@ sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 sshpass \
 | `python3-gi`         | Lets Python use GTK (the graphical toolkit)               |
 | `gir1.2-gtk-3.0`     | GTK 3 itself                                              |
 | `gir1.2-vte-2.91`    | The embedded terminal widget (like GNOME Terminal's core) |
-| `gir1.2-pango-1.0`   | Text rendering (coloured dots, fonts) — installed automatically together with `gir1.2-gtk-3.0` |
+| `gir1.2-pango-1.0`   | Text rendering (fonts) — installed automatically together with `gir1.2-gtk-3.0` |
 | `gir1.2-gdk-pixbuf-2.0` | Loading the logo image — installed automatically together with `gir1.2-gtk-3.0` |
+| `librsvg2-common`    | Draws the SVG button icons and the rotor loading animation. Already part of every Ubuntu desktop; without it the buttons simply show text only and a plain spinner is used |
+| ROS 2 + `ros-<distro>-foxglove-bridge` | Only for the **local Foxglove bridge** (see below), e.g. `sudo apt install ros-jazzy-foxglove-bridge`. Everything else works without ROS on this PC |
 | `sshpass`            | Feeds the SSH password without showing it on screen       |
 | `openssh-client`     | The `ssh` program itself (used for every connection; installed automatically on Ubuntu, listed here so nothing is missing) |
 
@@ -108,41 +79,41 @@ ROS sourced.
 ### Demo view (no drone needed)
 Click **Open offline demo**, or log in with the **demo credentials** (default: user `demo`, password
 `demo`, both changeable in `config.json`). The GUI opens normally —
-title shows **DEMO (not connected)** — but:
+the header bar shows an amber **Demo** status — but:
 
 - no SSH session is opened and no drone is contacted anywhere;
 - the terminal only shows a demo banner (it is not interactive);
-- all buttons work against **simulated drone answers**: the container
-  list shows a fake container, Start/Stop/shutdown run their full
+- all buttons work against **simulated drone answers**: the bridge
+  status starts as *running*, Start/Stop/shutdown run their full
   sequences with a small pretend state, and the log area fills as
   usual. Perfect for trying the GUI before the drone is on your desk.
 
-Ubuntu remembers the user and host after a successful SSH check. Windows
-remembers them after a successful background query. These two fields are
-stored in `%LOCALAPPDATA%\OmniQuadGUI\connection.json` on Windows and
-`$XDG_STATE_HOME/OmniQuadGUI/connection.json` on Ubuntu (default base
-`~/.local/state`). Removing this file restores the defaults from the repo.
+The app remembers the user and host after a successful SSH check. These two
+fields are stored in `$XDG_STATE_HOME/OmniQuadGUI/connection.json` (default
+base `~/.local/state`). Removing this file restores the defaults from the repo.
+To open the demo directly, run `python3 main.py --demo`.
 Login passwords stay in memory.
 
-After an Ubuntu SSH disconnect, the terminal and last results stay visible.
-Choose **Reconnect** to return to the login window. **Export containers CSV**
-and **Export topics CSV** save the displayed rows, including after disconnect.
+After an SSH disconnect, the terminal and last results stay visible.
+Choose **Reconnect** to return to the login window. **Export topics CSV**
+saves the displayed topics, including after disconnect.
 
 ## Files and configuration
 
 | File              | Purpose                                                        |
 |-------------------|----------------------------------------------------------------|
-| `main.py`         | Selects the native desktop for the current OS.   |
-| `gtk_app.py`      | Ubuntu interface, VTE terminal and container management. |
-| `windows_app.py`  | Native Windows diagnostics and SSH terminal launcher. |
-| `diagnostics.py`  | Shared settings, diagnostic commands and parsing. |
+| `main.py`         | Starts the app in a clean environment (see above).  |
+| `gtk_app.py`      | The interface: VTE terminal, container management and ROS tools. |
+| `ui_theme.py`     | Ubuntu look and feel: dark theme (CSS), icon loading, button/card helpers and the rotor loading animation. |
+| `local_bridge.py` | Starts, watches and stops the local Foxglove bridge (runs on this PC, not on the drone). |
+| `diagnostics.py`  | Settings, command definitions, topic parsing and CSV export. |
 | `config.json`     | Shared defaults for user, IP, demo credentials and `dry_run`. |
-| `commands.json`   | The button definitions (labels + commands). Data only.         |
-| `omniquadgui.png` | The app logo (login background, window + shortcut icon).       |
+| `commands.json`   | The button definitions (labels, icons + commands). Data only.  |
+| `images/`         | The app logo: `omniquadgui.png` (login background, window + shortcut icon) and `omniquadgui.svg` (vector source of the PNG). |
+| `images/icons/`   | The button icons (simple SVG line drawings, one file each). They draw in `currentColor`, which the app replaces with the colour each button needs. |
 | `launch.sh`       | Portable launcher script used by `OmniQuadGUI.desktop`; finds its own folder, installs the icon once, then starts the app. |
 | `OmniQuadGUI.desktop` | The double-clickable launcher icon inside the folder (portable: no user name or absolute path). |
 | `PROGRESS.txt`    | Handoff/progress notes for continuing development on the app. |
-| `omniquadgui.svg` | The same logo as vector graphic (source of the PNG).           |
 | `README.md`       | This file.                                                     |
 
 `config.json` looks like this:
@@ -153,17 +124,21 @@ and **Export topics CSV** save the displayed rows, including after disconnect.
     "ip": "",
     "dry_run": true,
     "demo_user": "demo",
-    "demo_password": "demo"
+    "demo_password": "demo",
+    "ros_setup": ""
 }
 ```
 
 - `user` — the login name on the drone.
 - `ip` — initial host when there is no saved connection for this user.
-- `dry_run` — leave `true` for now: the shutdown button (stage 2) will
+- `dry_run` — leave `true` for now: the Shutdown button will
   *print what it would run* instead of actually shutting the drone down.
 - `demo_user` / `demo_password` — login that opens the GUI in demo mode
   (no drone connection, simulated answers). Not a security feature —
   just a preview mode.
+- `ros_setup` — only for the local Foxglove bridge: the ROS `setup.bash`
+  to use if `ros2` is not already set up by your `~/.bashrc`. Leave it
+  empty to find it automatically in `/opt/ros/`.
 
 ## How SSH works on Ubuntu
 
@@ -182,7 +157,7 @@ and **Export topics CSV** save the displayed rows, including after disconnect.
    - Because the check already verified the password, this session logs in
      silently — no second password prompt.
 3. Every button that needs to *read* something from the drone
-   (container lists, safety checks) runs its own short, non-interactive
+   (bridge status, safety checks, topic list) runs its own short, non-interactive
    `ssh -o ControlPath=<socket> rock@<ip> "<command>"`. That reuses the
    master connection through the socket file, so **no password is needed
    again**. The GUI never freezes while these run: they happen in a
@@ -197,8 +172,9 @@ simply type their command into that terminal, exactly as if you had typed it.
 
 ## Host controls on Ubuntu
 
-The right-hand column has four buttons (built from `commands.json`), and
-the **left half** of the window is split 50/50 (drag the divider to
+The **Drone host** card (top right) holds the bridge status and the
+Start/Stop button, Shutdown sits at the bottom of the shell column (all
+built from `commands.json`), and the **left half** of the window is split 50/50 (drag the divider to
 change it): the terminal on top, and below it the small
 **Background command log** — every command the app runs remotely, and
 its output, is appended there with a timestamp. The on-screen log keeps
@@ -213,21 +189,32 @@ Pasting into the terminal: **right-click → Paste**, or the keyboard
 shortcut **Ctrl+Shift+V** (plain Ctrl+V does nothing in terminals —
 that is normal). Copy is right-click → Copy or Ctrl+Shift+C.
 
-### Check running containers
-Runs `docker ps` **without sudo**. The running containers appear as a
-list in the window (name + status). If the user (e.g. `rock`) is not
-allowed to use docker, you get a clear explanation with the exact
+### Bridge status
+The **Drone host** card shows one status label for the
+`px4_fastlio_bridge` container: **green** with normal text while it
+runs, **red** with grey text while it does not, plain grey when the
+state is unknown (not checked yet, or the check failed). The app checks
+automatically after connecting and after every start/stop; the small
+**refresh** arrow inside the label checks again by hand (it turns into
+the spinning rotor while checking). The check runs `docker ps`
+**without sudo**. If the user (e.g. `rock`) is not allowed to use
+docker, you get a clear explanation with the exact
 `sudo usermod -aG docker rock` command to fix it on the drone.
 
-### Start Fast-LIO container
-Runs `./nuc_helper.sh run --mode run_nodes --config ~/mid360_custom.yaml`
-in the drone's home directory and logs the result.
+### Start / Stop button
+A single button under the label: it shows **Start Fast-LIO container**
+while the bridge is stopped and **Stop Fast-LIO container** while it
+runs. When the state is unknown it shows a disabled *Start* — refresh
+first, so the app never starts the bridge blind.
 
-### Stop Fast-LIO container (safe sequence)
+**Start** runs `./nuc_helper.sh run --mode run_nodes --config ~/mid360_custom.yaml`
+in the drone's home directory, logs the result and checks the status again.
+
+**Stop** runs the safe sequence:
 1. Checks with `docker ps` whether `px4_fastlio_bridge` is running at all.
    If not: reports "already stopped" and does nothing else.
-2. If you had entered the container shell with the app's own button
-   (stage 3), it first sends Ctrl+C, waits 0.5 s and types `exit` — the
+2. If you had entered the container shell with the app's own button,
+   it first sends Ctrl+C, waits 0.5 s and types `exit` — the
    app only ever sends a bare `exit` when it knows you are inside the
    container, because otherwise it would close the whole ssh session.
 3. Runs `./nuc_helper.sh stoprm`. An error here is not fatal by itself.
@@ -256,16 +243,77 @@ normally (stopping the container, verification) **except** the final
 Set `"dry_run": false` in `config.json` only when you really want the
 drone to shut down from the app.
 
+## Local Foxglove bridge
+
+The **Foxglove bridge** card (top row, next to *Drone host*) controls a
+program that runs on **this computer**, not on the drone:
+`ros2 launch foxglove_bridge foxglove_bridge_launch.xml` (defined in the
+`local_bridge` section of `commands.json`).
+
+- It **starts together with OmniQuadGUI** (already at the login window,
+  `"autostart": true`) and keeps running across *Reconnect*. When you close
+  the program, it is stopped cleanly (Ctrl+C first, harder only if needed).
+  This also happens when the program is ended with `kill` or its terminal
+  is closed.
+- If a bridge is **already running** when it starts (for example after
+  the program crashed, or one started by hand in a terminal), that bridge
+  is stopped first and a fresh one is started. This only touches bridges
+  of your own user; the log shows which PIDs were restarted.
+- The status label is green (**RUNNING · ws://localhost:8765**, the address
+  to open in Foxglove) or red (**NOT RUNNING**), and one button starts or
+  stops it. This card stays usable even without a drone connection.
+- The **refresh button** on the label checks the bridge again and writes
+  what it found to the log: running and listening on port 8765; started but
+  the port is not open (yet); a bridge **not started by this app** is
+  running (grey label *RUNNING, NOT STARTED HERE*; press *Start* to restart
+  it from the app); or the port is taken by another program. The check
+  only looks; it never connects to the bridge or changes anything.
+- Its output appears in the **Background command log** with the prefix
+  `[foxglove]` (including what it printed before the main window opened).
+  Common problems come with a tip: bridge not installed, ROS not found, or
+  port 8765 already in use by a different program or another user.
+- ROS setup: the app itself runs without ROS (that keeps the window from
+  freezing), so the bridge is started through `bash -i`, which reads your
+  `~/.bashrc` — the same ROS setup (and `ROS_DOMAIN_ID`) as in a normal
+  terminal. If `ros2` is still not found, `/opt/ros/<distro>/setup.bash` is
+  used (or `ros_setup` from `config.json`).
+- Note: `foxglove_bridge` listens on **all network interfaces** by default
+  (`0.0.0.0:8765`), so other computers on the same network can connect to
+  it too.
+
 ## Container shell and ROS controls on Ubuntu
 
-The right side of the window has **two button columns** to keep things
-tidy: *Host commands* (docker, container start/stop, shutdown, and the
-container list) on the left, and *Container shell / ROS* on the right.
-The buttons carry small emojis (📦 enter, 🚪 leave, 📋 topics, 📡 LiDAR,
-…) so you can find the right one at a glance — the labels, including the
-emojis, live in `commands.json`. These buttons *type commands into the
-terminal* (and the log notes each one), so they only work while you are
-inside the container shell:
+The right side of the window is made of rounded cards:
+
+- **Drone host** at the top left: the bridge status label (with its
+  refresh button) and the Start/Stop button. The rest of the top row is
+  free for now.
+- Below it, on the left: **Container shell** (enter / leave),
+  **Diagnostics** (the fixed ROS checks), the big amber-outlined
+  **Stop current command**, and under it **Shutdown** (which turns into
+  *Confirm shutdown* + a cancel button after the first click).
+- Below it, on the right, with the most room: **ROS topics** (List
+  available topics, the filter, the topic list and Echo selected topic,
+  top to bottom in the order you use them).
+
+The theme is centred on Ubuntu orange. Every button shows an icon next
+to its text. Colours carry meaning: orange = the main action of a group,
+red = shutdown, amber outline = stop the running command (Start/Stop
+container look like normal buttons with a green / red icon). While
+something loads, a small spinning **rotor** appears in the card title
+(and next to the status text in the connect window).
+
+The header bar shows a thin **connection status** strip: a dot and a
+word (green *Connected*, amber *Connecting…*/*Demo*, red *No response*
+or *Disconnected*), then `user@ip`, then the network this PC uses to
+reach the drone (e.g. `Wi-Fi: LabNet`; hover it for the interface and
+this PC's own IP). While connected, the app quietly sends the harmless
+command `true` to the drone every 5 seconds over the existing connection
+(nothing is typed into the terminal or written to the log); if the drone
+does not answer, the dot turns red. The labels and the icon of each button live in `commands.json`
+(`"icon": "compass"` means `images/icons/compass.svg`). The container
+shell / ROS buttons *type commands into the terminal* (and the log notes
+each one), so they only work while you are inside the container shell:
 
 ### Enter PX4 bridge container / Leave container
 - **Enter** is only usable while a `docker ps` check says the
@@ -284,7 +332,7 @@ inside the container shell:
 ### Stop current command
 Sends Ctrl+C into the terminal — use it to stop `ros2 topic echo` or
 `ros2 topic hz`, which run forever until interrupted. It is the **big
-button at the bottom of the left column** (easy to reach), and it is
+amber-outlined button at the bottom of the shell column** (easy to reach), and it is
 usable only while inside the container shell, like the other ROS
 buttons. In the separate echo windows, press Ctrl+C directly in that
 window's terminal instead.
@@ -321,8 +369,8 @@ Remember: echo/hz print continuously — press **Stop current command**
 (or Ctrl+C in the terminal) when you have seen enough.
 
 ### Separate echo windows
-Every `ros2 topic echo ...` button (🔁 Echo selected topic, 🧭 Verify
-odometry, 📍 Specific position data) opens its **own terminal window**:
+Every `ros2 topic echo ...` button (Echo selected topic, Verify
+odometry, Specific position data) opens its **own terminal window**:
 it starts an ssh session (reusing the master connection, no password),
 enters the container and starts the echo inside it. Because each echo
 has its own window, you can echo **several topics at the same time**.
@@ -334,7 +382,6 @@ commands keep running in the main terminal as before.
 From the repository root, run `python -B -m unittest discover -s tests -v`.
 On Ubuntu, use the system Python with a display, or run
 `xvfb-run -a /usr/bin/python3 -B -m unittest discover -s tests -v`.
-GitHub Actions runs the Windows GUI tests and exercises GTK on Ubuntu 22.04 and
-24.04. Inside each disposable Linux container, a separate integration test uses
+GitHub Actions exercises GTK on Ubuntu 22.04 and 24.04. Inside each disposable Linux container, a separate integration test uses
 a loopback SSH server to check login, reuse of the master connection, and
 disconnect handling. Local test discovery skips this fixture automatically.

@@ -1,230 +1,299 @@
 OMNIQUADGUI - PROGRESS / HANDOFF SUMMARY
 ========================================
-(Generated after stage 3 completion. Paste into a new session to
-restore context.)
+Current-state snapshot (Nov 2026). Paste into a new session to restore
+context. Everything below describes the code AS IT IS NOW; the short
+history at the end says how it got here.
 
 PROJECT
 -------
-OmniQuadGUI: a Python 3 / GTK 3 desktop app for Ubuntu with an embedded
-VTE terminal that connects over SSH to a drone's onboard computer
-(Radxa Rock 5B, ROS 2, Docker). It manages containers and inspects ROS
-topics. It does NOT control flight. User is a mechanical engineering
-student with basic Python: code must stay simple, readable, heavily
-commented, no advanced patterns. Plain-English error messages.
+OmniQuadGUI: a Python 3 / GTK 3 desktop app, UBUNTU ONLY (22.04 / 24.04),
+with an embedded VTE terminal that connects over SSH to a drone's
+onboard computer (Radxa Rock 5B, ROS 2, Docker). It starts/stops the
+px4_fastlio_bridge container and inspects ROS topics. It does NOT
+control flight.
 
-Folder: /home/pil8/Desktop/OmniQuad_Stuff/OmniQuadGUI (portable: copyable
-to any PC / user / location).
+User: mechanical engineering student with basic Python. Code must stay
+simple, readable, heavily commented, no advanced patterns. Error
+messages in plain English. Do not re-add Windows / platform switches
+unless the user asks.
 
-Launcher: OmniQuadGUI.desktop INSIDE the project folder, now PORTABLE
-(%k = the desktop file's own location -> runs launch.sh next to it;
-no user name, no absolute path anywhere). launch.sh cds to its own
-folder, installs omniquadgui.png once into
-~/.local/share/icons/hicolor/256x256/apps (so Icon=omniquadgui works
-without admin rights), then execs python3 main.py. Use by double-click
-in Files (Allow Launching once). The desktop entry uses a
-desktop-file-validate-compliant, shell-free path handoff to launch.sh.
-`gio launch` from a terminal leaves %k EMPTY (stdin case) and would fail;
-use Files/GNOME or run `./launch.sh` from a terminal instead.
+Folder: /home/pil8/Desktop/OmniQuad_Stuff/OmniQuadGUI (portable: can be
+copied to any PC / user / location).
 
 FILES
 -----
-- main.py        whole app (~1500 lines, all stages)
-- config.json    user:"rock", ip:"" (last used), dry_run:true,
-                 demo_user:"demo", demo_password:"demo"
-- commands.json  button definitions as data (container_name:
-                 px4_fastlio_bridge, host_buttons, terminal_buttons)
-- launch.sh      portable launcher script (see above)
-- OmniQuadGUI.desktop   portable launcher icon inside the folder
-- omniquadgui.png / omniquadgui.svg   logo
-- README.md      install/run/explanation for all 3 stages
-- PROGRESS.txt   this file
-- OmniQuadGUI.txt, prompt1.txt   user's own notes (do not touch)
+- main.py          entry point: restarts itself in a clean environment
+                   (see LESSONS), then runs gtk_app.main(). --demo opens
+                   the offline demo directly.
+- gtk_app.py       the whole interface and behaviour (OmniQuadApp class):
+                   login window, main window, ssh session, background
+                   commands, bridge status, shell/ROS buttons, topics,
+                   echo windows, shutdown, connection status checks.
+- local_bridge.py  LocalBridge: starts / watches / stops the LOCAL Foxglove
+                   bridge (a program on THIS PC, not on the drone).
+- ui_theme.py      ALL look-and-feel: THEME_CSS, apply_theme(), icons,
+                   make_button / make_card / make_card_title,
+                   ConnectionStatus, BridgeStatus, RotorSpinner.
+- diagnostics.py   settings (config.json + remembered endpoint),
+                   commands.json loading/validation, topic_list_command,
+                   topic_names, export_csv.
+- config.json      user "rock", ip "" , dry_run true, demo_user/password
+                   "demo"/"demo", ros_setup "" (fallback setup.bash for
+                   the local bridge; "" = /opt/ros/* auto). Never stores
+                   passwords.
+- commands.json    button definitions as DATA: container_name,
+                   host_buttons, terminal_buttons; each entry has label,
+                   action, optional command and "icon" (= file name in
+                   images/icons/ without .svg). No emojis in labels.
+                   Optional "local_bridge" section: name, title, command,
+                   address, autostart, start_label, stop_label.
+- launch.sh        portable launcher: cd to own folder, install
+                   images/omniquadgui.png once into
+                   ~/.local/share/icons/hicolor/256x256/apps, exec main.py.
+- OmniQuadGUI.desktop  double-click launcher inside the folder; passes its
+                   own path (%k) to bash, which runs launch.sh next to it.
+                   Icon=omniquadgui (theme name installed by launch.sh).
+- images/          omniquadgui.png / .svg (logo); icons/*.svg (original
+                   24x24 line icons drawn in "currentColor").
+- tests/           test_gtk.py (GTK demo tests + optional loopback SSH
+                   test), test_diagnostics.py, ci-loopback.sh (CI only).
+- .github/workflows/ubuntu-gui.yml   CI on Ubuntu 22.04 + 24.04 containers.
+- README.md        user documentation.   PROGRESS.txt  this file.
+- Base prompts/    the user's own notes (OmniQuadGUI.txt, prompt1.txt).
+                   DO NOT edit or move.
 
-DEPENDENCIES
+DEPENDENCIES (apt only, nothing from pip)
 ------------
-python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, sshpass (plus
-openssh-client, auto-installed). Full table with explanations is now in
-README section 1 (nothing needs pip; app is stdlib + GTK/VTE only).
+python3-gi, gir1.2-gtk-3.0, gir1.2-vte-2.91, sshpass, openssh-client,
+librsvg2-common (SVG icons + rotor; on every Ubuntu desktop already).
+For the local bridge only: ROS 2 + ros-<distro>-foxglove-bridge (this PC
+has Jazzy + foxglove_bridge 3.6.0; ~/.bashrc sources ROS).
+NOT available / not a dependency: python3-gi-cairo (see LESSONS).
 
-BUGFIX PASS (Nov 2026, after user reports)
-------------------------------------------
-1) FROZEN GUI when started from a terminal (window appeared but nothing
-   was clickable; desktop icon was fine): the user shell sources ROS
-   Jazzy, which sets a long LD_LIBRARY_PATH full of /opt/ros/...
-   vendor libraries. Removing ROS_* vars + PYTHONPATH was NOT enough --
-   LD_LIBRARY_PATH made GTK/VTE load incompatible library copies.
-   FIX: main.py now RESTARTS ITSELF with os.execve in a whitelisted
-   clean environment (ENV_VARS_TO_KEEP: DISPLAY, XAUTHORITY,
-   WAYLAND_DISPLAY, XDG_*, DBUS_SESSION_BUS_ADDRESS, HOME, USER,
-   LANG/LC_*, TERM...; PATH kept but /opt/ros|conda|envs|venv entries
-   removed). Marker env var OMNIQUAD_CLEAN_ENV=1 prevents an infinite
-   restart loop; clean_own_environment() stays as fallback if execve
-   fails. The app now behaves like a desktop-icon start from EVERY
-   launcher (launch.sh included).
-2) Ubuntu 22.04: topic list stayed EMPTY (spinner forever). Cause:
-   Vte.Terminal.get_text_format() only exists since VTE 0.76 (Ubuntu
-   24.04 has it; 22.04 ships 0.68 and does NOT). The poll callback
-   raised AttributeError every 0.5 s and silently died. FIX:
-   _read_terminal_screen() now tries get_text_format -> get_text() ->
-   get_text(None, None) -> get_text_range(visible screen). On old VTE
-   get_text() returns the WHOLE scrollback, so topics scrolled off
-   screen are captured too.
-3) Hardening: the topic marker is now typed as  echo "MARKER"  (quoted)
-   so a wrapped fragment of the echoed command line can never exactly
-   equal the printed marker line (narrow windows wrap the typed
-   command over several rows; the poll matches whole stripped lines).
-4) NOTE: the copy of the old absolute-path Desktop shortcut the user
-   pasted into the project folder had OVERWRITTEN the portable
-   OmniQuadGUI.desktop. Restored to the portable version
-   (Exec=bash -c 'cd "$(dirname "%k")" && exec ./launch.sh',
-   Icon=omniquadgui); verified it parses via Gio.DesktopAppInfo
-   (new_from_filename -- do NOT run gio launch, %k stays empty).
+HOW TO RUN / TEST
+-----------------
+Run:   ./launch.sh   or   python3 main.py   (demo: python3 main.py --demo,
+       or log in with demo / demo).
+Test:  the user's login shell sources ROS Jazzy, so use a clean env:
+       env -i DISPLAY=:0 HOME=$HOME PATH=/usr/bin:/bin:/usr/sbin \
+         XAUTHORITY=$XAUTHORITY XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
+         DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS \
+         python3 -m unittest discover -s tests
+       (21 run, 1 skipped: the loopback SSH test needs the CI fixture.
+       Add -W error::ResourceWarning to catch unclosed pipes.)
+Test pattern: demo login, or patch run_ssh_background; drive the main
+loop with GLib.MainContext.default().iteration(False) until a condition
+holds; stub dialogs (Gtk.FileChooserDialog, show_loud_warning).
 
-STARTUP WINDOW SIZE FIX (Nov 2026)
-----------------------------------
-Windows had to be resized by hand before all buttons were visible.
-- Main window: the right button sidebar (ScrolledWindow in the
-  horizontal Paned) could shrink to ~170 px, hiding most buttons. Now:
-  sidebar policy NEVER horizontal (so it asks for the full button
-  width), pack2(sidebar, resize=False, shrink=False), natural width AND
-  height propagated, window size from fit_window_to_content() (content
-  size, min 1200x720, clamped to the monitor work area), and the divider
-  set so the sidebar gets exactly its natural width.
-- Start window: Gtk.Overlay only measures its MAIN child (the logo), so
-  the form on top was clipped. A Gtk.SizeGroup (BOTH) links logo and
-  form so the window always fits the form, also with long errors.
-  Do not remove that SizeGroup.
+USER INTERFACE (current)
+------------------------
+Dark theme centred on Ubuntu orange #e95420 (ui_theme.py). Styles:
+neutral, primary (orange gradient), danger (red), warning (amber
+OUTLINE, only "Stop current command"). Neutral icons soft orange;
+Start has a green icon, Stop a red icon; every icon turns grey while
+its button is disabled.
 
-STATUS: ALL THREE STAGES COMPLETE AND TESTED
---------------------------------------------
-Stage 1 (tested on real drone):
-- Start window: User + IP + masked password, Connect button, demo tip.
-- Background ssh check first (sshpass -e ssh ... echo ok), plain-English
-  errors. Main window: LEFT 50/50 vertical Paned = terminal + background
-  command log; RIGHT = scrollable button panel.
-- Real session: sshpass -e ssh -o ControlMaster=yes -o ControlPath=
-  <socket in mkdtemp omniquad-*> -o StrictHostKeyChecking=accept-new.
-- Close: ssh -O exit, temp dir removed. Start window closes when main
-  opens (disconnect its Gtk.main_quit handler first).
+Login window: logo faded (opacity 0.12) behind the form via Gtk.Overlay;
+User / Drone IP / Password fields with icons; Connect (primary); a
+RotorSpinner + status label while connecting; "Open offline demo".
 
-Stage 2 (confirmed by user):
-- Host buttons from commands.json: docker ps check (list in GUI,
-  permission-denied explanation), start container, SAFE stop sequence
-  (check -> leave shell if flag -> stoprm -> verify), two-step shutdown
-  with SAFETY-CRITICAL verify: abort + loud dialog if container still
-  running or check failed; dry_run prints instead of shutting down;
-  real shutdown = sudo -S -p '' shutdown now with password via ssh
-  stdin; afterwards buttons disabled, calm connection-lost message.
-- Remote reads in background threads:
-  ssh -o ControlPath=<socket> rock@<ip> "<command>"; GUI updates only
-  via GLib.idle_add; every command+output appended to the log area.
+Main window:
+- Header bar: logo, title, ConnectionStatus strip:
+  dot + state | user@ip | network ("Wi-Fi: <name>", tooltip = interface
+  + this PC's IP). live = green "Connected", waiting = amber
+  "Connecting…"/"Demo", offline = red "Disconnected"/"No response"/
+  "Not ready".
+- LEFT (vertical Paned, 50/50): "Drone terminal" card (VTE) and
+  "Background command log" card (Follow log check box).
+- RIGHT (build_right_panel):
+    top row:   small DRONE HOST card, then the FOXGLOVE BRIDGE card
+               (both same width as the shell column, Gtk.SizeGroup
+               left_column_width); rest of the row EMPTY ON PURPOSE
+               (reserved for future controls).
+               Inside: BridgeStatus label for px4_fastlio_bridge
+               (green + normal text = running, red + grey text = not
+               running, grey = unknown) with a refresh icon button that a
+               Gtk.Stack swaps for a RotorSpinner while checking; under
+               it ONE Start/Stop toggle (Gtk.Stack: start_bridge_button /
+               stop_bridge_button). Unknown -> disabled Start (never
+               start blind).
+    bottom left (build_shell_panel): Container shell (Enter = primary,
+               Leave), Diagnostics (fixed ROS commands), then at the
+               bottom "Stop current command" (big, amber outline) and
+               under it Shutdown (big, red) / Confirm shutdown + cancel.
+    bottom right (build_topics_panel, min width 380, expands): List
+               available topics, filter, topic list, Echo selected topic.
+- Footer (Gtk.ActionBar): Export topics CSV (left), Reconnect (right,
+  hidden until the session ends).
 
-Stage 3 (all 22 headless checks pass):
-- Terminal buttons built from commands.json. ROS buttons DISABLED until
-  "Enter PX4 bridge container" is used (types docker exec -it
-  px4_fastlio_bridge bash, sets inside_container_shell=True); disabled
-  again by Leave (Ctrl+C, 0.5 s, exit; only allowed while flag set) --
-  leave_container_shell() now also calls update_shell_button_state(),
-  so stop/shutdown sequences reset the buttons too.
-- "Stop current command" sends Ctrl+C (b"\x03"); it is a BIG button
-  (CSS class big-stop-button, min height 50) pinned to the bottom of
-  the LEFT (host) column, but still gated on being inside the shell.
-- Echo commands (ros2 topic echo ...) now open their OWN terminal
-  window each (open_echo_window): ssh over the ControlPath socket ->
-  wait spawn -> type "docker exec -it px4_fastlio_bridge bash" -> wait
-  1.5 s -> type the echo command. Several echo windows can run at once;
-  closing a window stops that echo (echo_windows list, destroy hook).
-  Demo mode shows a note instead of spawning. hz commands still type
-  into the main terminal. build_spawn_envv() extracted and shared.
-- "List available topics": types "ros2 topic list; echo
-  OMNIQUAD_TOPICS_DONE_<n>" INTO the terminal (ros2 only exists inside
-  the container shell; <n> increments per click so an OLD marker on
-  screen can never be mistaken for the new answer), then POLLS the
-  terminal screen every 0.5 s (wait_for_topics, up to 60 checks = 30 s)
-  until the marker appears, then reads the printed topics
-  (lines starting with "/", deduped) and fills the clickable
-  SINGLE-selection Gtk.ListBox with its own spinner; clicking a row sets
-  selected_topic. The OLD fixed 3-second wait was the reason topics were
-  not fetched on slower PCs -- never bring a fixed wait back. The old
-  background "docker exec ... ros2 topic list" variant failed on the
-  real drone (non-interactive shell has no ROS env) - do not bring it
-  back. 8 headless logic checks pass (test script was in /tmp; marker,
-  dedupe, timeout, per-click marker numbering).
-- "Echo selected topic": opens an echo window for
-  "ros2 topic echo <selection>" (see echo windows below).
-- Fixed buttons type their commands.json command (odometry echo,
-  --field pose.pose.position, covariances grep, rmem_max, IMU/LiDAR hz).
-- Helpers: type_in_terminal(cmd) and send_ctrl_c() log "[terminal] $"
-  and are demo-safe; find_terminal_command(action) reads commands.json.
+BEHAVIOUR / ARCHITECTURE
+------------------------
+- Connect: background `sshpass -e ssh ... echo ok` check (password via
+  SSHPASS env only), plain-English errors (explain_ssh_error). Then the
+  real session in the terminal: sshpass -e ssh -o ControlMaster=yes
+  -o ControlPath=<mkdtemp omniquad-*/ssh-ctl> -o
+  StrictHostKeyChecking=accept-new. Successful user/ip are remembered in
+  ~/.local/state/OmniQuadGUI/connection.json.
+- Background commands: run_ssh_background() -> ssh -o ControlPath=...
+  -o BatchMode=yes user@ip "<cmd>" in a thread; result + output go to the
+  log; GUI updates only via GLib.idle_add. Demo mode answers via
+  demo_answer() with a small simulated state (demo_container_running).
+- Connection status: check_connection() every STATUS_CHECK_SECONDS=5
+  once the master socket exists: ssh ... true (timeout 6 s, NOT logged,
+  never typed into the terminal) + describe_network(ip) (`ip route get`,
+  `nmcli -g GENERAL.TYPE,GENERAL.CONNECTION device show <dev>`, every
+  step optional). Stops when the session ends. No ServerAlive options
+  were added to the ssh session itself.
+- Bridge state: self.container_running True/False/None is the single
+  source of truth. set_container_state() -> update_bridge_widgets() +
+  update_shell_button_state(); demo_run() also updates the widgets.
+  Checked automatically after connecting and after start/stop
+  (CONTAINER_LIST = docker ps --format "{{.Names}}|{{.Status}}", no sudo;
+  permission-denied gets the usermod explanation).
+- Start: commands.json start_container command (./nuc_helper.sh run ...),
+  then re-check. Stop = SAFE sequence: docker ps check -> leave the
+  container shell first if inside -> ./nuc_helper.sh stoprm -> verify.
+- Shutdown (two clicks): leave shell + stoprm + verify; SAFETY-CRITICAL:
+  abort with a loud dialog if the check failed or the container still
+  runs. dry_run (default true) only logs. Real: sudo -S -p '' shutdown
+  now with the password through ssh STDIN.
+- Container shell: "Enter" types docker exec -it px4_fastlio_bridge bash
+  and sets inside_container_shell; ROS buttons work only while it is
+  set. "Leave" = Ctrl+C, 0.5 s, `exit`. Enter needs container_running
+  True.
+- Topics: on_list_topics() runs IN THE BACKGROUND
+  topic_list_command() = docker exec -- px4_fastlio_bridge bash -ic
+  'ros2 topic list' (interactive bash loads the ROS setup; introduced by
+  PR #1). topic_names() keeps unique lines starting with "/". Filter is
+  local; selection enables "Echo selected topic".
+- Echo commands open their OWN terminal window each (open_echo_window:
+  ssh over the control socket -> docker exec -it ... bash -> 1.5 s ->
+  the echo command); several can run at once; closing stops it. hz
+  commands type into the main terminal.
+- LOCAL FOXGLOVE BRIDGE (local_bridge.py + build_local_bridge_panel):
+  main() creates ONE LocalBridge (create_local_bridge) before the
+  login window, starts it if commands.json local_bridge.autostart, passes
+  it to every OmniQuadApp (survives Reconnect), and stops it in main()'s
+  `finally` with stop(wait=True). Started as
+  bash -ic 'command -v ros2 || source <ros_setup>; exec <command>'
+  (bash -i reads ~/.bashrc = the user's ROS env + ROS_DOMAIN_ID; the
+  app's own env stays ROS-free), stdin DEVNULL, stdout+stderr piped,
+  start_new_session=True (own process group). Stop: SIGINT to the
+  group, then SIGTERM, then SIGKILL after STOP_GRACE_SECONDS=5 each,
+  escalating while ANY group member lives (group_alive), not only the
+  main process. A reader thread forwards lines via GLib.idle_add to
+  on_output (-> log, prefix "[foxglove]"), keeps the last 300 in
+  recent_lines (replayed when a main window opens), and reports the end
+  (on_state_changed). Plain-English tips for: package not found, ros2
+  not found, address already in use. Before every start(),
+  stop_leftovers() scans /proc for this user's copies NOT started by us
+  (is_same_program: argv contains the command, first word compared by
+  basename, or argv[0] basename == name; group leaders are signalled as
+  a whole group) and stops them with LEFTOVER_STOP_STEPS (SIGINT 3 s,
+  SIGTERM 2 s, SIGKILL 1 s; zombies count as gone), then starts fresh.
+  main() turns SIGINT, SIGTERM and SIGHUP into a normal window close,
+  so `finally` still stops the bridge. Refresh button on the card:
+  on_check_local_bridge runs LocalBridge.check() in a thread (read-only:
+  own pid, find_leftovers(), port_listeners(port) from /proc/net/tcp(6)
+  + /proc/*/fd, so it never connects to the bridge); describe_check()
+  turns it into (state, label text, log line). BridgeStatus.set_state
+  takes an optional text ("RUNNING, NOT STARTED HERE", grey). If the
+  bridge started/ended during the check, the live state wins. The
+  card (BridgeStatus, Start/Stop Gtk.Stack) is NOT in self.controls, so it
+  stays usable while drone controls are disabled / disconnected.
+  self.controls is a WidgetGroup(host_card, bottom row) - only the
+  drone sections. Verified on this PC: listening on :8765 after ~1.2 s,
+  clean stop in ~0.8 s, no leftover processes.
+- Log area capped at MAX_LOG_LINES 5000 / MAX_LOG_CHARS 512000.
+- Every message the app prints into a VTE terminal goes through
+  feed_text() ("\n" -> "\r\n", no "staircase" text).
+- main() wraps everything: unexpected exceptions show a dialog with the
+  traceback (no console when started from the launcher).
 
-EXTRAS (all user-requested, all tested)
----------------------------------------
-- Right-click Copy/Paste menu on terminal; Ctrl+Shift+V/C shortcuts.
-- 50/50 terminal/log split (draggable).
-- Confirm/Cancel row hidden until Shutdown armed (show_all() reveals
-  everything -> hide explicitly after show_all; no_show_all ignores
-  show_all even on itself).
-- Auto container check after Start finishes.
-- Green dot on Start, red dot on Stop (make_dot_button, Pango markup);
-  whale on Check containers, skull on Shutdown (make_emoji_button).
-- Shutdown button "warm-action" CSS (load_button_styles): bg #e01b24,
-  white text; Confirm uses built-in destructive-action.
-- Gtk.Spinner beside container list label (and beside topics label).
-- Demo mode (demo/demo): full GUI, no ssh at all, title
-  "DEMO (not connected)", simulated drone state (demo_container_running,
-  demo_answer: docker ps, nuc_helper run/stoprm, ros2 topic list).
-  Real shutdown guarded. Demo banner in terminal = PLAIN LINES only
-  (user hates deformed ASCII art).
-- Logo: faded (opacity 0.2, 240px) behind login form via Gtk.Overlay
-  (logo = main child/bottom, form = add_overlay/top);
-  set_default_icon_from_file for all windows; shortcut icon absolute
-  path to omniquadgui.png.
+SAFETY RULES (never break)
+--------------------------
+- Passwords: SSHPASS env var only (sshpass -e); never on a command line,
+  in the log or on disk; sudo password only via ssh stdin.
+- Never send a bare `exit` unless inside_container_shell is True (it
+  would close the whole ssh session).
+- Shutdown only after a VERIFIED stopped container; dry_run defaults on.
+- Never start the bridge while its state is unknown.
 
-IMPORTANT TECHNICAL LESSONS (do not regress)
---------------------------------------------
-- clean_own_environment() runs BEFORE the gi import: it removes ROS_*
-  vars + AMENT_PREFIX_PATH and strips /opt/ros/* PYTHONPATH entries from
-  the APP's own environment. With ROS Jazzy sourced in the user's shell
-  the app was unreliable -- it only started properly from the desktop
-  icon (clean env). Now the app behaves the same from every launcher.
-  UPDATE (bugfix pass): the surgical cleanup was NOT enough (frozen GUI
-  from a terminal -- see BUGFIX PASS item 1). The app now re-execs
-  itself into a whitelisted clean env first; clean_own_environment()
-  is only the fallback.
-- Portable .desktop lesson: %k expands to the desktop file's own path
-  ONLY when launched by a real launcher (GDesktopAppInfo from filename,
-  like Files/desktop do). `gio launch` feeds the file via stdin and
-  leaves %k EMPTY. The Exec field must still pass
-  desktop-file-validate; shell quoting that happens to work in GNOME can
-  be rejected by other launchers.
-- VTE spawn_async on this Ubuntu:
-  (pty_flags, working_dir, argv, envv, GLib.SpawnFlags.SEARCH_PATH,
-   child_setup, child_setup_data, timeout, cancellable, callback)
-  -> (Vte.PtyFlags.DEFAULT, None, argv, envv, SEARCH_PATH, None, None,
-      -1, None, cb). Wrong order = invisible TypeError from .desktop.
-- main() wraps app in try/except: unexpected exceptions show a
-  Gtk.MessageDialog with traceback (hidden-console safety net).
-- Test pattern: env -i DISPLAY=:0 HOME=... PATH=... python3; stub
-  start_ssh_session; demo login OR monkeypatch run_ssh_background with
-  canned queue (pop per call); test sequences SEQUENTIALLY; stub
-  dialogs. User's login shell has ROS Jazzy env - clean env needed.
-- Password rules: SSHPASS env var only (sshpass -e), never command
-  line/logs/disk; sudo password via ssh stdin only; config.json never
-  stores passwords. Demo creds are not security.
-- Never send a bare `exit` unless inside_container_shell is True.
+LESSONS (do not regress)
+------------------------
+- Clean environment: with ROS Jazzy sourced, LD_LIBRARY_PATH made GTK/VTE
+  load wrong libraries (window visible but frozen). main.py re-execs
+  itself (os.execve) with a whitelist (ENV_VARS_TO_KEEP; PATH without
+  /opt/ros, conda, venv entries); marker OMNIQUAD_CLEAN_ENV=1 prevents a
+  restart loop; clean_own_environment() is only the fallback.
+- No cairo: python3-gi-cairo is missing, so no Gdk.cairo_* and no
+  DrawingArea "draw" handlers. Images: Gtk.Image.new_from_gicon(pixbuf)
+  + set_pixel_size (sharp on HiDPI). RotorSpinner is a flip book:
+  rotor_frame_svg() makes 24 frames per 120 degrees (three blades) once
+  (FRAME_CACHE), a tick callback swaps them; Gtk.Spinner fallback if SVG
+  cannot be drawn. ui_theme.py must call gi.require_version for Gtk,
+  Gdk and GdkPixbuf itself (imported alone it would get GTK 4's Gdk).
+- Window sizing: with a header bar, an unrealized window reports a tiny
+  size and hidden widgets report 0. So open_main_window does
+  header.show_all() + layout.show_all(), then hide_until_needed() (the
+  Confirm-shutdown pair and the topics rotor), then
+  fit_window_to_content(window, 1360, 720, parts=[header, layout]) (sum
+  of natural sizes, clamped to the monitor work area), then
+  window.show() - NOT show_all(), which re-revealed the hidden widgets
+  at map time and opened the window too wide.
+- Paned: pane.pack1(left_pane, True, False) (terminal side takes extra
+  width, never clipped) and pane.pack2(sidebar, False, False) with
+  sidebar policy NEVER horizontally (buttons never hidden); the divider
+  is set to window width - sidebar natural width.
+- Login window: Gtk.Overlay measures only its main child (the logo); a
+  Gtk.SizeGroup (BOTH) between logo and form keeps the form unclipped.
+- no_show_all widgets ignore show_all() even on themselves.
+- Gtk.Stack.set_visible_child_name() is ignored while that child is still
+  hidden: show the stack's children (button.show_all()) BEFORE adding
+  them, or a toggle built for the "running" state shows "Start".
+- Never read export data back out of row widgets (an icon in a row once
+  broke the old container CSV export).
+- VTE spawn_async argument order on this Ubuntu: (Vte.PtyFlags.DEFAULT,
+  None, argv, envv, GLib.SpawnFlags.SEARCH_PATH, None, None, -1, None,
+  callback). Wrong order = invisible TypeError when started from a
+  launcher.
+- VTE 0.68 (Ubuntu 22.04) has no get_text_format(); anything reading the
+  terminal screen must fall back to get_text().
+- Portable .desktop launcher: the Exec line must pass
+  desktop-file-validate, which rejects single quotes and field codes
+  inside quotes. Pass %k as a separate argument instead:
+  Exec=bash -c "exec \\"\\$(dirname \\"\\$1\\")/launch.sh\\"" OmniQuadGUI %k
+  (works from Files and from `gio launch`). Icon=omniquadgui.
+- A copy of the launcher OUTSIDE the folder (e.g. on the Desktop) can't
+  use %k; it finds the app via
+  "$(xdg-user-dir DESKTOP)/OmniQuad_Stuff/OmniQuadGUI/launch.sh".
 
-HOW TO RUN
+OPEN ITEMS
 ----------
-cd /home/pil8/Desktop/OmniQuad_Stuff/OmniQuadGUI && python3 main.py
-or double-click the desktop shortcut (if icon/launcher misbehaves:
-gio set ~/Desktop/OmniQuadGUI.desktop metadata::trusted true).
-Demo login: user "demo", password "demo".
+- Topic listing via `bash -ic` (PR #1) should be confirmed on the real
+  drone; the older non-interactive docker exec variant had failed there
+  because it had no ROS environment.
+- If the user types `exit` by hand inside the container, the app's flag
+  stays True until Leave/Stop/Shutdown (README: always use Leave).
+- The empty space in the top row of the right panel (after the Foxglove
+  card) is reserved for future controls.
+- foxglove_bridge listens on 0.0.0.0:8765 (all interfaces) by default;
+  pass address:=127.0.0.1 in the command if it must be local-only.
+- If the app is killed hard (SIGKILL / crash of Python itself), the
+  bridge keeps running (own process group) until the next app start,
+  which restarts it (stop_leftovers). Verified on this PC: a stuck
+  bridge was replaced at start, and `kill <app pid>` left nothing.
 
-NEXT STEPS / IDEAS (none committed)
------------------------------------
-- All three planned stages are done; any further work is new scope.
-- Known manual-exit limitation: if the user types `exit` by hand inside
-  the container, the app's flag stays True until Leave/Stop/Shutdown is
-  used. Documented in README ("always use the Leave button").
-- dry_run defaults to true; user should flip it in config.json only
-  when a real shutdown from the GUI is wanted.
+HISTORY (short)
+---------------
+- Stages 1-3: login + embedded ssh terminal; host buttons with safe
+  stop / shutdown; container shell, ROS buttons, topic list, echo
+  windows. Bugfix pass: clean-env restart, VTE 0.68 fallback.
+- PR #1 (GioOtto): Windows diagnostics (later removed), reconnect, CSV
+  export, remembered endpoint, background topic listing, tests + CI.
+- Nov 2026 (this series of sessions): startup window sizing fix; images
+  moved to images/; full UI redesign (icons instead of emojis, cards,
+  gradients, rotor spinner); Ubuntu-orange palette; header connection
+  status; layout reworked several times; Windows support removed;
+  container list replaced by the bridge status label + Start/Stop
+  toggle; three-blade rotor; local Foxglove bridge card (autostart).

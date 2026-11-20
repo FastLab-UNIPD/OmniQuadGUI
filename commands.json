@@ -1,86 +1,111 @@
 {
     "container_name": "px4_fastlio_bridge",
 
+    "local_bridge": {
+        "name": "foxglove_bridge",
+        "title": "Foxglove bridge",
+        "command": "ros2 launch foxglove_bridge foxglove_bridge_launch.xml",
+        "address": "ws://localhost:8765",
+        "autostart": true,
+        "start_label": "Start Foxglove bridge",
+        "stop_label": "Stop Foxglove bridge"
+    },
+
     "host_buttons": [
         {
             "label": "Check running containers",
+            "icon": "containers",
             "action": "docker_ps"
         },
         {
             "label": "Start Fast-LIO container",
+            "icon": "play",
             "action": "start_container",
             "command": "./nuc_helper.sh run --mode run_nodes --config ~/mid360_custom.yaml"
         },
         {
             "label": "Stop Fast-LIO container",
+            "icon": "stop",
             "action": "stop_container"
         },
         {
             "label": "Shutdown",
+            "icon": "power",
             "action": "shutdown"
         }
     ],
 
     "terminal_buttons": [
         {
-            "label": "📦 Enter PX4 bridge container",
+            "label": "Enter PX4 bridge container",
+            "icon": "enter",
             "action": "enter_container",
             "command": "docker exec -it px4_fastlio_bridge bash",
             "needs_inside_shell": false
         },
         {
-            "label": "🚪 Leave container",
+            "label": "Leave container",
+            "icon": "leave",
             "action": "leave_container",
             "needs_inside_shell": true
         },
         {
-            "label": "✋ Stop current command",
+            "label": "Stop current command",
+            "icon": "interrupt",
             "action": "stop_command",
             "needs_inside_shell": false
         },
         {
-            "label": "📋 List available topics",
+            "label": "List available topics",
+            "icon": "list",
             "action": "list_topics",
             "command": "ros2 topic list",
             "needs_inside_shell": false
         },
         {
-            "label": "🔁 Echo selected topic",
+            "label": "Echo selected topic",
+            "icon": "echo",
             "action": "echo_selected",
             "needs_inside_shell": false
         },
         {
-            "label": "🧭 Verify odometry",
+            "label": "Verify odometry",
+            "icon": "compass",
             "action": "echo_selected",
             "command": "ros2 topic echo /Odometry",
             "needs_inside_shell": false
         },
         {
-            "label": "📍 Specific position data",
+            "label": "Specific position data",
+            "icon": "pin",
             "action": "send_to_terminal",
             "command": "ros2 topic echo /Odometry --field pose.pose.position",
             "needs_inside_shell": false
         },
         {
-            "label": "🔍 Verify covariances",
+            "label": "Verify covariances",
+            "icon": "covariance",
             "action": "send_to_terminal",
             "command": "grep -E \"acc_cov|gyr_cov\" /root/ros2_ws/install/fast_lio/share/fast_lio/config/mid360_override.yaml",
             "needs_inside_shell": false
         },
         {
-            "label": "🌐 Verify network buffer sizes",
+            "label": "Verify network buffer sizes",
+            "icon": "network",
             "action": "send_to_terminal",
             "command": "cat /proc/sys/net/core/rmem_max",
             "needs_inside_shell": false
         },
         {
-            "label": "📶 Check Livox IMU frequency",
+            "label": "Check Livox IMU frequency",
+            "icon": "pulse",
             "action": "send_to_terminal",
             "command": "ros2 topic hz /livox/imu",
             "needs_inside_shell": false
         },
         {
-            "label": "📡 Check Livox LiDAR frequency",
+            "label": "Check Livox LiDAR frequency",
+            "icon": "radar",
             "action": "send_to_terminal",
             "command": "ros2 topic hz /livox/lidar",
             "needs_inside_shell": false

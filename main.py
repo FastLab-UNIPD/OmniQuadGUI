@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the native OmniQuadGUI interface for this desktop."""
+"""Start OmniQuadGUI (Ubuntu, GTK 3)."""
 
 import argparse
 import os
@@ -121,13 +121,10 @@ def main():
     parser = argparse.ArgumentParser(description="OmniQuadGUI desktop diagnostics")
     parser.add_argument("--demo", action="store_true", help="open the offline demo directly")
     args = parser.parse_args()
-    if sys.platform == "win32":
-        from windows_app import main as run
-    else:
-        if os.environ.get(CLEAN_ENV_MARKER) != "1":
-            relaunch_with_clean_environment()
-        clean_own_environment()
-        from gtk_app import main as run
+    if os.environ.get(CLEAN_ENV_MARKER) != "1":
+        relaunch_with_clean_environment()
+    clean_own_environment()
+    from gtk_app import main as run
     run(demo=args.demo)
 
 

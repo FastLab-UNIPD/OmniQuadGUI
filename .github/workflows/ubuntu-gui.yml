@@ -10,24 +10,21 @@ jobs:
       fail-fast: false
       matrix:
         release: ["22.04", "24.04"]
-    container: ubuntu:${{ matrix.release }}
+    container:
+      image: ubuntu:${{ matrix.release }}
+      # --init adds a tiny init process that cleans up finished orphan
+      # processes ("zombies"). Without it, PID 1 is `tail -f /dev/null`,
+      # zombies never disappear, and the local-bridge tests that check
+      # "no process of the stopped bridge is left" can never pass.
+      options: --init
     steps:
       - name: Install desktop test dependencies
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates git python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 xvfb xauth openssh-server sshpass
+            ca-certificates git python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 librsvg2-common xvfb xauth openssh-server sshpass
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Exercise GTK and the SSH client against loopback
         run: sh tests/ci-loopback.sh
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Exercise the native Windows interface
-        run: python -B -m unittest discover -s tests -v

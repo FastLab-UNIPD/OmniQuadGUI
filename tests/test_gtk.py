@@ -43,13 +43,124 @@ class GtkDemoTests(unittest.TestCase):
             app.shutdown_verify_done(True, 0, "")
             shutdown.assert_not_called()
 
+    def test_bridge_label_and_toggle_follow_the_container_state(self):
+        from gtk_app import GLib, OmniQuadApp
+        app = OmniQuadApp(demo=True)
+        self.addCleanup(self.close_app, app)
+        context = GLib.MainContext.default()
+
+        def until(predicate):
+            deadline = time.monotonic() + 3
+            while not predicate() and time.monotonic() < deadline:
+                context.iteration(False)
+                time.sleep(0.002)
+            self.assertTrue(predicate())
+
+        def label_state():
+            classes = app.bridge_status.get_style_context().list_classes()
+            return [name for name in classes if name.startswith("oq-bridge-")]
+
+        # Demo bridge runs: green label, the toggle offers "Stop".
+        until(lambda: app.container_running is True and app.controls.get_sensitive())
+        self.assertEqual(label_state(), ["oq-bridge-running"])
+        self.assertEqual(app.bridge_toggle.get_visible_child_name(), "stop")
+        # Stop it with the toggle (full safe sequence): red label, "Start".
+        app.stop_bridge_button.clicked()
+        until(lambda: app.container_running is False and app.controls.get_sensitive())
+        self.assertEqual(label_state(), ["oq-bridge-stopped"])
+        self.assertEqual(app.bridge_toggle.get_visible_child_name(), "start")
+        self.assertTrue(app.start_bridge_button.get_sensitive())
+        # A failed check: unknown state, and Start is not allowed blind.
+        app.on_containers_result(False, 1, "boom")
+        self.assertEqual(label_state(), ["oq-bridge-unknown"])
+        self.assertFalse(app.start_bridge_button.get_sensitive())
+        # The refresh button checks again (demo answer: still stopped).
+        app.bridge_status.refresh_button.clicked()
+        until(lambda: app.container_running is False)
+
+    def test_local_bridge_card_works_without_the_drone(self):
+        from gtk_app import GLib, OmniQuadApp
+        from local_bridge import LocalBridge
+        bridge = LocalBridge("fake_bridge", "sleep 30")
+        bridge.ros_setup = ""
+        self.addCleanup(bridge.stop, True)
+        app = OmniQuadApp(demo=True, local_bridge=bridge)
+        self.addCleanup(self.close_app, app)
+        context = GLib.MainContext.default()
+
+        def until(predicate):
+            deadline = time.monotonic() + 8
+            while not predicate() and time.monotonic() < deadline:
+                context.iteration(False)
+                time.sleep(0.002)
+            self.assertTrue(predicate())
+
+        self.assertEqual(app.local_toggle.get_visible_child_name(), "start")
+        # Even with every DRONE control switched off, the local card works.
+        app.set_drone_buttons_enabled(False)
+        self.assertFalse(app.controls.get_sensitive())
+        self.assertTrue(app.start_local_button.is_sensitive())
+        app.start_local_button.clicked()
+        until(lambda: bridge.is_running())
+        self.assertEqual(app.local_toggle.get_visible_child_name(), "stop")
+        app.stop_local_button.clicked()
+        until(lambda: not bridge.is_running()
+              and app.local_toggle.get_visible_child_name() == "start")
+        self.assertIn("[foxglove] fake_bridge stopped.", app.log_buffer.get_text(
+            *app.log_buffer.get_bounds(), False))
+
+    def test_a_bridge_started_before_the_window_shows_stop(self):
+        # The real startup order: main() starts the bridge, THEN the
+        # window is built.  The card must offer "Stop" right away.
+        from gtk_app import OmniQuadApp
+        from local_bridge import LocalBridge
+        bridge = LocalBridge("fake_bridge", "sleep 30")
+        bridge.ros_setup = ""
+        self.addCleanup(bridge.stop, True)
+        bridge.start()
+        app = OmniQuadApp(demo=True, local_bridge=bridge)
+        self.addCleanup(self.close_app, app)
+        self.assertEqual(app.local_toggle.get_visible_child_name(), "stop")
+        self.assertIn("[foxglove] $ sleep 30", app.log_buffer.get_text(
+            *app.log_buffer.get_bounds(), False))
+
+    def test_refresh_checks_the_local_bridge(self):
+        from gtk_app import GLib, OmniQuadApp
+        from local_bridge import LocalBridge
+        bridge = LocalBridge("fake_bridge", "sleep 30")
+        bridge.ros_setup = ""
+        self.addCleanup(bridge.stop, True)
+        app = OmniQuadApp(demo=True, local_bridge=bridge)
+        self.addCleanup(self.close_app, app)
+        context = GLib.MainContext.default()
+
+        def log():
+            return app.log_buffer.get_text(*app.log_buffer.get_bounds(), False)
+
+        def refresh_until(text):
+            app.local_bridge_status.refresh_button.clicked()
+            deadline = time.monotonic() + 8
+            while text not in log() and time.monotonic() < deadline:
+                context.iteration(False)
+                time.sleep(0.002)
+            self.assertIn(text, log())
+
+        self.assertIsNotNone(app.local_bridge_status.refresh_button)
+        refresh_until("[foxglove] fake_bridge is not running.")
+        self.assertEqual(app.local_bridge_status.state_label.get_text(), "NOT RUNNING")
+        bridge.start()
+        refresh_until("[foxglove] fake_bridge is running (PID %d)." % bridge.process.pid)
+        self.assertTrue(app.local_bridge_status.state_label.get_text().startswith("RUNNING ·"))
+        # The rotor is gone again: the refresh button is back.
+        self.assertEqual(app.local_bridge_status.action.get_visible_child_name(), "refresh")
+
     def test_reconnect_opens_a_fresh_login(self):
         import gtk_app
         sessions = []
         real_app = gtk_app.OmniQuadApp
 
-        def create(demo):
-            app = real_app(demo=demo)
+        def create(demo, **kwargs):
+            app = real_app(demo=demo, **kwargs)
             sessions.append(app)
             def interact():
                 if demo:
@@ -61,8 +172,11 @@ class GtkDemoTests(unittest.TestCase):
             gtk_app.GLib.idle_add(interact)
             return app
 
-        with patch("gtk_app.OmniQuadApp", side_effect=create):
+        # Never launch the real Foxglove bridge from a test.
+        with patch("gtk_app.OmniQuadApp", side_effect=create), \
+                patch("gtk_app.LocalBridge.start") as start_bridge:
             gtk_app.main(demo=True)
+        start_bridge.assert_called_once()   # once per program, not per window
         self.assertEqual(len(sessions), 2)
         self.assertTrue(sessions[0].closed)
         self.assertFalse(sessions[1].demo_mode)
@@ -121,7 +235,7 @@ class GtkDemoTests(unittest.TestCase):
             app.password_entry.set_text(app.config["demo_password"])
             app.connect_button.clicked()
             self.addCleanup(self.close_app, app)
-            until(lambda: len(app.container_listbox.get_children()) == 1)
+            until(lambda: app.container_running is True)
             app.enter_container_button.clicked()
             app.list_topics_button.clicked()
             self.assertFalse(app.list_topics_button.get_sensitive())
