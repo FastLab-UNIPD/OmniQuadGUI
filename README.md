@@ -121,7 +121,6 @@ saves the displayed topics, including after disconnect.
 | `images/icons/`   | The button icons (simple SVG line drawings, one file each). They draw in `currentColor`, which the app replaces with the colour each button needs. |
 | `launch.sh`       | Portable launcher script used by `OmniQuadGUI.desktop`; finds its own folder, installs the icon once, then starts the app. |
 | `OmniQuadGUI.desktop` | The double-clickable launcher icon inside the folder (portable: no user name or absolute path). |
-| `PROGRESS.txt`    | Handoff/progress notes for continuing development on the app. |
 | `README.md`       | This file.                                                     |
 
 `config.json` looks like this:
